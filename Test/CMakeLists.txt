@@ -11,14 +11,15 @@ set(CMAKE_AUTORCC ON PARENT_SCOPE)
 set(CMAKE_AUTOUIC ON PARENT_SCOPE)
 
 find_package(GTest CONFIG REQUIRED)
-find_package(Qt6 COMPONENTS Core Gui Test REQUIRED)
+find_package(Qt6 COMPONENTS Core Test REQUIRED)
 
 include_directories(${CMAKE_INSTALL_PREFIX}/include)
 
-add_executable(${PROJECT_NAME} 
-    Test/PythonForLinux.cpp
-    Test/PythonForWin.cpp
-    Test/TestQObject.h
+add_executable(${PROJECT_NAME}
+    test.cpp
+    #Test/Python.cpp
+    #Test/PythonEdgeCases.cpp
+    Test/PythonPackages.cpp
 )
 
 if (WIN32)
@@ -34,7 +35,6 @@ target_link_libraries(
     PUBLIC
     Library
     Qt6::Core
-    Qt6::Gui
     Qt6::Test
     GTest::gtest
     GTest::gtest_main
