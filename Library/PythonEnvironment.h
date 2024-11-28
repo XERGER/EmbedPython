@@ -4,6 +4,9 @@
 #include <QString>
 #include <QMutex>
 #include "global.h"
+#ifdef Q_OS_WIN
+#include <Windows.h>
+#endif
 
 /**
  * @brief The Python class initializes and manages the Python interpreter.
@@ -22,32 +25,36 @@ public:
 
     QString getPythonExecutablePath() const;
 
-	QString getSitePackagesPath() const;
+    QString getSitePackagesPath() const;
 	QString getLibPath() const;
 	QString getDLLsPath() const;
 
-    bool init();
+    bool init() const;
 
-    bool installPackage(const QString& package);
+
     bool isPackageInstalled(const QString& package) const;
+    bool installPackage(const QString& package) const;
     QStringList listInstalledPackages() const;
-
-    QMutex* getInterpreterMutex() const;
+     
+    bool installLocalPackage(const QString& packagePath) const;
+    bool installOpenAPIClient() const;
 
 
     QString getDefaultEnvPath() const;
 	QString computeFileHash(const QString& filePath) const;
 	bool verifyPythonExecutable() const;
-
-private:
     bool lockPythonExecutable() const;
 
+private:
+
+    mutable QRecursiveMutex mutex;
 
     QString deobfuscateExpectedHash() const;
     bool unlockPythonExecutable() const;
-    bool isInitialized;
+    mutable bool isInitialized;
     QString pythonHome;
     QString pythonPath;
-    mutable QMutex mutex;
+    mutable std::atomic<int> lockCounter = 0;
     mutable QStringList installedPackages;
+
 };

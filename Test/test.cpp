@@ -19,10 +19,10 @@ void printString(QString const& output)
 }
 
 int main(int argc, char** argv) {
+	QCoreApplication app(argc, argv);
 
 	::testing::InitGoogleTest(&argc, argv);
 
-	QCoreApplication app(argc, argv);
 
 	return RUN_ALL_TESTS();
 }

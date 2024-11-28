@@ -4,10 +4,10 @@
 #include <QMetaType>
 #include <QMetaProperty>
 
-#include <Python.h>  // Include Python headers without 'slots' macro interference
 
 PyObject* DataConverter::QVariantToPyObject(const QVariant& variant) {
 	switch (variant.metaType().id()) { // Use metaType().id() instead of type()
+	case QMetaType::LongLong:
 	case QMetaType::Int:
 		return PyLong_FromLong(variant.toInt());
 	case QMetaType::Double:

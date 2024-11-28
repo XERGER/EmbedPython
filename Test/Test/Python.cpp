@@ -100,3 +100,39 @@ TEST_F(PythonRunnerTest, ExecutionTimeMeasurement) {
 	EXPECT_TRUE(result.isSuccess());
 	EXPECT_GE(result.getExecutionTime(), 2000);
 }
+
+TEST_F(PythonRunnerTest, CheckSyntaxSuccess) {
+	// Arrange
+	QString script = "def foo():\n    return 'Hello, World!'\nfoo()";
+
+	// Act
+	PythonResult result = runner->checkSyntax(script);
+
+	// Assert
+	EXPECT_TRUE(result.isSuccess());
+	EXPECT_TRUE(result.getErrorOutput().isEmpty());
+}
+
+TEST_F(PythonRunnerTest, CheckSyntaxFailure) {
+	// Arrange
+	QString script = "def foo()\n    return 'Missing colon'";
+
+	// Act
+	PythonResult result = runner->checkSyntax(script);
+
+	// Assert
+	EXPECT_FALSE(result.isSuccess());
+	EXPECT_FALSE(result.getErrorOutput().isEmpty());
+}
+
+TEST_F(PythonRunnerTest, CheckSyntaxEmptyScript) {
+	// Arrange
+	QString script = "";
+
+	// Act
+	PythonResult result = runner->checkSyntax(script);
+
+	// Assert
+	EXPECT_FALSE(result.isSuccess());
+	EXPECT_EQ(result.getErrorOutput(), "Script is empty.");
+}

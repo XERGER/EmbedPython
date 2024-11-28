@@ -20,6 +20,7 @@ protected:
 	std::shared_ptr<PythonEnvironment> pythonEnv;
 	PythonRunner* runner;
 };
+
 TEST_F(PythonPackagesTest, InstallAndVerifyPackage_numpy) {
 	// Arrange
 	QString package = "numpy";
@@ -50,6 +51,7 @@ TEST_F(PythonPackagesTest, UseInstalledPackage_numpy) {
 	EXPECT_TRUE(result.isSuccess());
 	EXPECT_EQ(result.getOutput().trimmed(), "10"); // 1 + 2 + 3 + 4 = 10
 }
+
 TEST_F(PythonPackagesTest, InstallAndVerifyPackage) {
 	// Arrange
 	QString package = "requests";
@@ -90,3 +92,4 @@ TEST_F(PythonPackagesTest, InstallNonExistentPackage) {
 	EXPECT_FALSE(installSuccess);
 	EXPECT_FALSE(pythonEnv->isPackageInstalled(package));
 }
+

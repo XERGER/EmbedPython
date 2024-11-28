@@ -34,11 +34,19 @@ PythonEnvironment::PythonEnvironment()
 	mainThreadState = nullptr;
 	pythonHome = getDefaultEnvPath();
 	pythonPath = getSitePackagesPath();
+	if (!verifyPythonExecutable()) {
+		qCritical() << "Python executable verification failed.";
+		return;
+	}
 }
 
 PythonEnvironment::PythonEnvironment(const QString& envPath)
 	: isInitialized(false), pythonHome(envPath) {
 	pythonPath = getSitePackagesPath();
+	if (!verifyPythonExecutable()) {
+		qCritical() << "Python executable verification failed.";
+		return;
+	}
 }
 
 // Destructor
@@ -49,7 +57,6 @@ PythonEnvironment::~PythonEnvironment() {
 		Py_Finalize();
 	}
 	locker.unlock();
-	unlockPythonExecutable();
 }
 
 // Getter functions
@@ -84,7 +91,7 @@ QString PythonEnvironment::getDefaultEnvPath() const {
 }
 
 // Initialization
-bool PythonEnvironment::init() {
+bool PythonEnvironment::init()const {
 	QMutexLocker locker(&mutex);
 
 	// Set environment variables
@@ -233,6 +240,137 @@ QStringList PythonEnvironment::listInstalledPackages() const {
 
 	return packagesList;
 }
+bool PythonEnvironment::installLocalPackage(const QString& packagePath) const {
+	if (!init()) {
+		return false;
+	}
+
+	QMutexLocker locker(&mutex);
+
+	QString pythonExePath = getPythonExecutablePath();
+	if (pythonExePath.isEmpty()) {
+		qCritical() << "Python executable path is empty. Cannot install package.";
+		return false;
+	}
+
+	// Update pip first
+	QStringList argsUpdatePip{ "-m", "pip", "install", "--upgrade", "pip" };
+	QProcess updatePipProcess;
+	updatePipProcess.setProgram(pythonExePath);
+	updatePipProcess.setArguments(argsUpdatePip);
+
+	if (!verifyPythonExecutable()) {
+		qCritical() << "Python executable verification failed.";
+		return false;
+	}
+
+	qDebug() << "Updating pip...";
+	updatePipProcess.start();
+	if (!updatePipProcess.waitForFinished(10000)) { // Wait up to 10 seconds
+		qCritical() << "Failed to update pip:" << updatePipProcess.errorString();
+	}
+	else {
+		QString updatePipStdout = QString::fromUtf8(updatePipProcess.readAllStandardOutput()).trimmed();
+		QString updatePipStderr = QString::fromUtf8(updatePipProcess.readAllStandardError()).trimmed();
+		if (updatePipProcess.exitCode() != 0) {
+			qCritical() << "pip update failed:" << updatePipStderr;
+			// Depending on your requirements, you might want to proceed or abort here
+		}
+		else {
+			qDebug() << "pip updated successfully:" << updatePipStdout;
+		}
+	}
+
+	// Verify package path
+	QFileInfo packageInfo(packagePath);
+	if (!packageInfo.exists() || !packageInfo.isDir()) {
+		qCritical() << "Package path does not exist or is not a directory:" << packagePath;
+		return false;
+	}
+
+	qDebug() << "Installing package from path:" << packagePath;
+
+	// Construct the pip install command
+	QStringList argsInstall{
+		"-m",
+		"pip",
+		"install",
+		packagePath,
+		"--upgrade",          // Upgrade the package if it's already installed
+		"--no-cache-dir",  // Do not use cache to ensure fresh installation
+		"--target", pythonPath     
+	};
+
+	QProcess installProcess;
+	installProcess.setProgram(pythonExePath);
+	installProcess.setArguments(argsInstall);
+	installProcess.setWorkingDirectory(packagePath); // Set the working directory to the package directory
+
+	if (!verifyPythonExecutable()) {
+		qCritical() << "Python executable verification failed.";
+		return false;
+	}
+
+	qDebug() << "Starting package installation...";
+	installProcess.start();
+	if (!installProcess.waitForFinished(30000)) { // Wait up to 30 seconds
+		qCritical() << "Failed to execute pip install:" << installProcess.errorString();
+		return false;
+	}
+
+	QString installStdout = QString::fromUtf8(installProcess.readAllStandardOutput()).trimmed();
+	QString installStderr = QString::fromUtf8(installProcess.readAllStandardError()).trimmed();
+
+	if (installProcess.exitCode() != 0) {
+		qCritical() << "pip install failed:" << installStderr;
+		return false;
+	}
+
+	qDebug() << "Package installed successfully:" << installStdout;
+
+	// Optionally, update the list of installed packages
+	installedPackages = listInstalledPackages();
+
+	return true;
+}
+
+bool PythonEnvironment::installOpenAPIClient() const
+{
+	QString packageName = "openapi-client";
+	QString packageRelativePath = "python_client"; // Relative to the application directory
+
+	QString appDir = QCoreApplication::applicationDirPath();
+	QString absolutePackagePath = QDir(appDir).filePath(packageRelativePath);
+
+	QMutexLocker locker(&mutex);
+
+	// Verify that the package directory exists
+	QFileInfo packageDirInfo(absolutePackagePath);
+	if (!packageDirInfo.exists() || !packageDirInfo.isDir()) {
+		qCritical() << "Package path does not exist or is not a directory:" << absolutePackagePath;
+		return false;
+	}
+
+	// Verify that setup.py exists in the package directory
+	QString setupPyPath = QDir(absolutePackagePath).filePath("setup.py");
+	if (!QFile::exists(setupPyPath)) {
+		qCritical() << "setup.py not found in the package directory:" << absolutePackagePath;
+		return false;
+	}
+
+	// Attempt to install or upgrade the package
+	qDebug() << "Installing/upgrading package:" << packageName << "from path:" << absolutePackagePath;
+	bool success = installLocalPackage(absolutePackagePath);
+
+	if (success) {
+		qDebug() << "Package" << packageName << "installed/upgraded successfully.";
+	}
+	else {
+		qCritical() << "Failed to install/upgrade package:" << packageName;
+	}
+
+	return success;
+}
 
 bool PythonEnvironment::isPackageInstalled(const QString& package) const {
 	if (installedPackages.isEmpty()) {
@@ -241,7 +379,7 @@ bool PythonEnvironment::isPackageInstalled(const QString& package) const {
 	return installedPackages.contains(package, Qt::CaseInsensitive);
 }
 
-bool PythonEnvironment::installPackage(const QString& package) {
+bool PythonEnvironment::installPackage(const QString& package) const {
 
 	if (!init()) {
 		return false;
@@ -255,7 +393,6 @@ bool PythonEnvironment::installPackage(const QString& package) {
 	}
 
 	QString pythonExePath = getPythonExecutablePath();
-	unlockPythonExecutable();
 
 	QStringList args{ "-m", "pip", "install", package, "--no-cache-dir", "--target", pythonPath };
 	QProcess process;
@@ -269,12 +406,11 @@ bool PythonEnvironment::installPackage(const QString& package) {
 
 	process.start();
 
-	if (!process.waitForFinished(30000)) {
+	if (!process.waitForFinished(5*60000)) {
 		qCritical() << "Failed to execute pip:" << process.errorString();
 		return false;
 	}
 
-	lockPythonExecutable();
 	bool success = (process.exitCode() == 0);
 
 	if (success) {
@@ -289,83 +425,92 @@ bool PythonEnvironment::installPackage(const QString& package) {
 }
 
 bool PythonEnvironment::lockPythonExecutable() const {
-
-
-	QString pythonExePath = getPythonExecutablePath();
-	if (pythonExePath.isEmpty()) {
-		qCritical() << "Python executable path is empty. Cannot lock.";
-		return false;
+	QMutexLocker locker(&mutex); // Thread safety
+	if (lockCounter.fetch_add(1, std::memory_order_relaxed) == 0) {
+#ifdef Q_OS_WIN
+		QString pythonExePath = getPythonExecutablePath();
+		if (pythonExePath.isEmpty()) {
+			qCritical() << "Python executable path is empty. Cannot lock.";
+			lockCounter.fetch_sub(1, std::memory_order_relaxed);
+			return false;
+		}
+		std::wstring widePath = pythonExePath.toStdWString();
+		lockedFileHandle = CreateFileW(
+			widePath.c_str(),
+			FILE_GENERIC_EXECUTE,       // Request execute permissions
+			FILE_SHARE_READ,            // Allow shared read access
+			NULL,
+			OPEN_EXISTING,
+			FILE_ATTRIBUTE_NORMAL,
+			NULL
+		);
+		if (lockedFileHandle == INVALID_HANDLE_VALUE) {
+			qCritical() << "Failed to lock Python executable:" << GetLastError();
+			lockCounter.fetch_sub(1, std::memory_order_relaxed);
+			return false;
+		}
+#else
+		QString pythonExePath = getPythonExecutablePath();
+		if (pythonExePath.isEmpty()) {
+			qCritical() << "Python executable path is empty. Cannot lock.";
+			lockCounter.fetch_sub(1, std::memory_order_relaxed);
+			return false;
+		}
+		lockedFileDescriptor = open(pythonExePath.toStdString().c_str(), O_RDONLY);
+		if (lockedFileDescriptor == -1) {
+			qCritical() << "Failed to open Python executable for locking:" << strerror(errno);
+			lockCounter.fetch_sub(1, std::memory_order_relaxed);
+			return false;
+		}
+		if (flock(lockedFileDescriptor, LOCK_SH | LOCK_NB) == -1) { // Shared lock
+			qCritical() << "Failed to lock Python executable:" << strerror(errno);
+			close(lockedFileDescriptor);
+			lockedFileDescriptor = -1;
+			lockCounter.fetch_sub(1, std::memory_order_relaxed);
+			return false;
+		}
+#endif
 	}
-// 
-// #ifdef Q_OS_WIN
-// 	// Convert QString to wide string
-// 	std::wstring widePath = pythonExePath.toStdWString();
-// 	lockedFileHandle = CreateFileW(
-// 		widePath.c_str(),
-// 		GENERIC_READ,
-// 		0,
-// 		NULL,
-// 		OPEN_EXISTING,
-// 		FILE_ATTRIBUTE_NORMAL,
-// 		NULL
-// 	);
-// 	if (lockedFileHandle == INVALID_HANDLE_VALUE) {
-// 		qCritical() << "Failed to lock Python executable:" << GetLastError();
-// 		return false;
-// 	}
-// #else
-// 	// Unix-like systems: Open the file and apply an exclusive lock
-// 	lockedFileDescriptor = open(pythonExePath.toStdString().c_str(), O_RDONLY);
-// 	if (lockedFileDescriptor == -1) {
-// 		qCritical() << "Failed to open Python executable for locking:" << strerror(errno);
-// 		return false;
-// 	}
-// 	if (flock(lockedFileDescriptor, LOCK_EX | LOCK_NB) == -1) {
-// 		qCritical() << "Failed to lock Python executable:" << strerror(errno);
-// 		close(lockedFileDescriptor);
-// 		lockedFileDescriptor = -1;
-// 		return false;
-// 	}
-// #endif
-// 	qDebug() << "Python executable locked successfully.";
+
 	return true;
 }
+
 
 bool PythonEnvironment::unlockPythonExecutable() const {
 
 	QString pythonExePath = getPythonExecutablePath();
-// 	if (pythonExePath.isEmpty()) {
-// 		qCritical() << "Python executable path is empty. Cannot unlock.";
-// 		return false;
-// 	}
-// 
-// #ifdef Q_OS_WIN
-// 	if (lockedFileHandle != INVALID_HANDLE_VALUE) {
-// 		if (!CloseHandle(lockedFileHandle)) {
-// 			qCritical() << "Failed to unlock Python executable:" << GetLastError();
-// 			return false;
-// 		}
-// 		lockedFileHandle = INVALID_HANDLE_VALUE;
-// 	}
-// 	else {
-// 		qWarning() << "Python executable was not locked.";
-// 	}
-// #else
-// 	if (lockedFileDescriptor != -1) {
-// 		if (flock(lockedFileDescriptor, LOCK_UN) == -1) {
-// 			qCritical() << "Failed to unlock Python executable:" << strerror(errno);
-// 			// Even if unlocking fails, attempt to close the file descriptor
-// 		}
-// 		if (close(lockedFileDescriptor) == -1) {
-// 			qCritical() << "Failed to close file descriptor:" << strerror(errno);
-// 			return false;
-// 		}
-// 		lockedFileDescriptor = -1;
-// 	}
-// 	else {
-// 		qWarning() << "Python executable was not locked.";
-// 	}
-// #endif
+	if (pythonExePath.isEmpty()) {
+		qCritical() << "Python executable path is empty. Cannot unlock.";
+		return false;
+	}
+
+#ifdef Q_OS_WIN
+	if (lockedFileHandle != INVALID_HANDLE_VALUE) {
+		if (!CloseHandle(lockedFileHandle)) {
+			qCritical() << "Failed to unlock Python executable:" << GetLastError();
+			return false;
+		}
+		lockedFileHandle = INVALID_HANDLE_VALUE;
+	}
+	else {
+		qWarning() << "Python executable was not locked.";
+	}
+#else
+	if (lockedFileDescriptor != -1) {
+		if (flock(lockedFileDescriptor, LOCK_UN) == -1) {
+			qCritical() << "Failed to unlock Python executable:" << strerror(errno);
+			// Even if unlocking fails, attempt to close the file descriptor
+		}
+		if (close(lockedFileDescriptor) == -1) {
+			qCritical() << "Failed to close file descriptor:" << strerror(errno);
+			return false;
+		}
+		lockedFileDescriptor = -1;
+	}
+	else {
+		qWarning() << "Python executable was not locked.";
+	}
+#endif
 
 	return true;
 }

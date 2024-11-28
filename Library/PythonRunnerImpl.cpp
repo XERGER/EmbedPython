@@ -1,46 +1,14 @@
-#include <Python.h>
-#include "PythonRunner.h"
+#include "PythonRunnerImpl.h"
+#include "PythonEnvironment.h"
 #include <QElapsedTimer>
 #include <QDebug>
 #include <QtConcurrent>
-#include <QFutureWatcher>
-#include <QTimer>
-#include <atomic>
-#include <QList>
+#include <signal.h>
 #include "DataConverter.h"
-#include "PythonEnvironment.h"
 
-// Definition of the Impl class inside PythonRunner.cpp
-class PythonRunner::Impl {
-public:
-	Impl(std::shared_ptr<PythonEnvironment> const& pythonInstance, QObject* parent);
-	~Impl();
 
-	PythonResult runScript(const QString& script, const QVariantList& arguments, int timeout);
-	void cancel();
-	PythonResult checkSyntax(const QString& script);
-
-	struct ScriptExecutionContext {
-		QFutureWatcher<PythonResult>* watcher;
-		QTimer* timeoutTimer;
-		std::atomic<bool> isCancelled;
-	};
-
-	QList<ScriptExecutionContext*> executions;
-private:
-	QObject* parentObject; // Store parent QObject
-	std::shared_ptr<PythonEnvironment> pythonEnv;
-
-	PyObject* sysModule;
-	PyObject* ioModule;
-	PyObject* stringIOClass;
-	PyObject* getValueMethod;
-};
-
-// Constructor
-PythonRunner::Impl::Impl(std::shared_ptr<PythonEnvironment> const& pythonInstance, QObject* parent)
-	: pythonEnv(pythonInstance), parentObject(parent),
-	sysModule(nullptr), ioModule(nullptr), stringIOClass(nullptr), getValueMethod(nullptr) {
+PythonRunner::Impl::Impl(std::shared_ptr<PythonEnvironment> const& pythonInstance)
+	: pythonEnv(pythonInstance), sysModule(nullptr), ioModule(nullptr), stringIOClass(nullptr), getValueMethod(nullptr) {
 	if (!pythonInstance->init()) {
 		qCritical() << "Failed to initialize Python environment.";
 	}
@@ -55,12 +23,6 @@ PythonRunner::Impl::Impl(std::shared_ptr<PythonEnvironment> const& pythonInstanc
 	if (sysModule && ioModule) {
 		stringIOClass = PyObject_GetAttrString(ioModule, "StringIO");
 		getValueMethod = PyUnicode_FromString("getvalue");
-
-
-		if (!stringIOClass || !getValueMethod)
-		{
-			qCritical() << "Failed to intialize io";
-		}
 	}
 	else {
 		qCritical() << "Failed to initialize Python modules.";
@@ -69,7 +31,6 @@ PythonRunner::Impl::Impl(std::shared_ptr<PythonEnvironment> const& pythonInstanc
 	PyGILState_Release(gstate);
 }
 
-// Destructor
 PythonRunner::Impl::~Impl() {
 	PyGILState_STATE gstate = PyGILState_Ensure();
 	Py_XDECREF(sysModule);
@@ -79,23 +40,21 @@ PythonRunner::Impl::~Impl() {
 	PyGILState_Release(gstate);
 }
 
-// Implement runScript
 PythonResult PythonRunner::Impl::runScript(const QString& script, const QVariantList& arguments, int timeout) {
 	Q_UNUSED(timeout);
-	if (script.isEmpty()) {
+	if (script.isEmpty())
 		return PythonResult(false, "", "Script is Empty.");
-	}
 
-	QElapsedTimer timer;
+	QElapsedTimer timer; // Timer to measure execution time
 	timer.start();
 
+	// Acquire Python GIL
 	PyGILState_STATE gstate = PyGILState_Ensure();
 
 	try {
 		// Create new StringIO objects for stdout and stderr
 		PyObject* stringIOOut = PyObject_CallObject(stringIOClass, nullptr);
 		PyObject* stringIOErr = PyObject_CallObject(stringIOClass, nullptr);
-
 		if (!stringIOOut || !stringIOErr) {
 			Py_XDECREF(stringIOOut);
 			Py_XDECREF(stringIOErr);
@@ -103,29 +62,43 @@ PythonResult PythonRunner::Impl::runScript(const QString& script, const QVariant
 			return PythonResult(false, "", "Failed to create StringIO objects.");
 		}
 
+		// Swap sys.stdout and sys.stderr
+		PyObject* oldStdout = PyObject_GetAttrString(sysModule, "stdout");
+		PyObject* oldStderr = PyObject_GetAttrString(sysModule, "stderr");
 		PyObject_SetAttrString(sysModule, "stdout", stringIOOut);
 		PyObject_SetAttrString(sysModule, "stderr", stringIOErr);
 
+		// Execute the script
 		PyObject* mainModule = PyImport_AddModule("__main__");
 		PyObject* mainDict = PyModule_GetDict(mainModule);
 
 		if (!arguments.isEmpty()) {
 			for (int i = 0; i < arguments.size(); ++i) {
-				QString varName = QString("arg%1").arg(i + 1);
+				QString varName = QString("arg%1").arg(i + 1); // Variable names: arg1, arg2, etc.
 				PyObject* argPy = DataConverter::QVariantToPyObject(arguments[i]);
 				if (!argPy) {
+					// Restore sys.stdout and sys.stderr
+					PyObject_SetAttrString(sysModule, "stdout", oldStdout);
+					PyObject_SetAttrString(sysModule, "stderr", oldStderr);
+					Py_XDECREF(oldStdout);
+					Py_XDECREF(oldStderr);
 					Py_DECREF(stringIOOut);
 					Py_DECREF(stringIOErr);
 					PyGILState_Release(gstate);
 					return PythonResult(false, "", "Failed to convert argument to PyObject.");
 				}
 				PyDict_SetItemString(mainDict, varName.toUtf8().constData(), argPy);
-				Py_DECREF(argPy);
+				Py_DECREF(argPy); // Decrement reference as PyDict_SetItemString increments it
 			}
 		}
 
 		PyObject* resultObj = PyRun_String(script.toUtf8().constData(), Py_file_input, mainDict, mainDict);
 
+		// Restore sys.stdout and sys.stderr
+		PyObject_SetAttrString(sysModule, "stdout", oldStdout);
+		PyObject_SetAttrString(sysModule, "stderr", oldStderr);
+		Py_XDECREF(oldStdout);
+		Py_XDECREF(oldStderr);
 
 		QString outputStr, errorOutputStr;
 		bool success = (resultObj != nullptr);
@@ -138,31 +111,19 @@ PythonResult PythonRunner::Impl::runScript(const QString& script, const QVariant
 			errorOutputStr = "Script execution failed.";
 		}
 
-		PyObject* outputObj = PyObject_CallMethodObjArgs(stringIOOut, getValueMethod, NULL);
-		PyObject* errorOutputObj = PyObject_CallMethodObjArgs(stringIOErr, getValueMethod, NULL);
-
+		// Retrieve output and error messages
+		PyObject* outputObj = PyObject_CallMethodObjArgs(stringIOOut, getValueMethod, nullptr);
+		PyObject* errorOutputObj = PyObject_CallMethodObjArgs(stringIOErr, getValueMethod, nullptr);
 		if (outputObj) {
 			outputStr = QString::fromUtf8(PyUnicode_AsUTF8(outputObj));
 			Py_DECREF(outputObj);
 		}
-		else {
-			qDebug() << "Failed to capture output.";
-			PyErr_Print();
-			errorOutputStr += "Failed to capture output.";
-		}
-
 		if (errorOutputObj) {
-		
 			errorOutputStr += QString::fromUtf8(PyUnicode_AsUTF8(errorOutputObj));
 			Py_DECREF(errorOutputObj);
 		}
-		else {
-			qDebug() << "Failed to capture error output.";
-			PyErr_Print();
-			errorOutputStr += "Failed to capture output.";
-		}
 
-
+		// Cleanup
 		Py_DECREF(stringIOOut);
 		Py_DECREF(stringIOErr);
 
@@ -175,11 +136,61 @@ PythonResult PythonRunner::Impl::runScript(const QString& script, const QVariant
 		PyGILState_Release(gstate);
 		return PythonResult(false, "", "An unknown error occurred.");
 	}
+	
+	
 }
 
+QFuture<PythonResult> PythonRunner::Impl::runScriptAsync(const QString& script, const QVariantList& arguments, int timeout) {
+	auto context = new ScriptExecutionContext();
+	context->isCancelled.store(false);
+	context->watcher = new QFutureWatcher<PythonResult>(this);
+	context->timeoutTimer = nullptr;
 
-// Implement cancel
+	// Add context to the list
+	executions.append(context);
+
+	// Start asynchronous execution using QtConcurrent
+	QFuture<PythonResult> future = QtConcurrent::run([this, script, arguments, context]() -> PythonResult {
+		if (context->isCancelled.load()) {
+			return PythonResult(false, "", "Execution was cancelled.");
+		}
+		return this->runScript(script, arguments);
+		});
+
+	// Set the future to the watcher
+	context->watcher->setFuture(future);
+
+	// Implement timeout using QTimer
+	if (timeout > 0) {
+		context->timeoutTimer = new QTimer(this);
+		context->timeoutTimer->setSingleShot(true);
+		QObject::connect(context->timeoutTimer, &QTimer::timeout, this, [this, context]() {
+			if (!context->watcher->isFinished()) {
+				qWarning() << "Script execution timed out. Cancelling...";
+				context->isCancelled.store(true);
+				PyGILState_STATE gstate = PyGILState_Ensure();
+				PyErr_SetInterrupt(); // Interrupt the Python interpreter
+				PyGILState_Release(gstate);
+			}
+			});
+		context->timeoutTimer->start(timeout);
+	}
+
+	// Connect to the finished signal to clean up
+	connect(context->watcher, &QFutureWatcher<PythonResult>::finished, this, [this, context]() {
+		// Stop the timer if it's still running
+		if (context->timeoutTimer && context->timeoutTimer->isActive()) {
+			context->timeoutTimer->stop();
+		}
+		// Cleanup
+		cleanupExecution(context);
+		});
+
+	return future;
+}
+
 void PythonRunner::Impl::cancel() {
+	// Cancel all running executions
 	for (auto context : executions) {
 		context->isCancelled.store(true);
 		PyGILState_STATE gstate = PyGILState_Ensure();
@@ -188,7 +199,6 @@ void PythonRunner::Impl::cancel() {
 	}
 }
 
-// Implement checkSyntax
 PythonResult PythonRunner::Impl::checkSyntax(const QString& script) {
 	if (script.isEmpty()) {
 		return PythonResult(false, "", "Script is empty.");
@@ -237,75 +247,11 @@ PythonResult PythonRunner::Impl::checkSyntax(const QString& script) {
 	}
 }
 
-// PythonRunner constructor and destructor
-PythonRunner::PythonRunner(std::shared_ptr<PythonEnvironment> const& pythonInstance, QObject* parent)
-	: QObject(parent), impl(std::make_unique<Impl>(pythonInstance, this)) {}
-
-PythonRunner::~PythonRunner() = default;
-
-// Forward public methods to the Impl
-PythonResult PythonRunner::runScript(const QString& script, const QVariantList& arguments, int timeout) {
-	return impl->runScript(script, arguments, timeout);
-}
-
-QFuture<PythonResult> PythonRunner::runScriptAsync(const QString& script, const QVariantList& arguments, int timeout) {
-	auto context = new Impl::ScriptExecutionContext();
-	context->isCancelled.store(false);
-	context->watcher = new QFutureWatcher<PythonResult>(this);
-	context->timeoutTimer = nullptr;
-
-	// Add context to the list
-	impl->executions.append(context);
-
-	// Start asynchronous execution using QtConcurrent
-	QFuture<PythonResult> future = QtConcurrent::run([this, script, arguments, context]() -> PythonResult {
-		if (context->isCancelled.load()) {
-			return PythonResult(false, "", "Execution was cancelled.");
-		}
-		return this->runScript(script, arguments);
-		});
-
-	// Set the future to the watcher
-	context->watcher->setFuture(future);
-
-	// Implement timeout using QTimer
-	if (timeout > 0) {
-		context->timeoutTimer = new QTimer(this);
-		context->timeoutTimer->setSingleShot(true);
-		connect(context->timeoutTimer, &QTimer::timeout, this, [this, context]() {
-			if (!context->watcher->isFinished()) {
-				qWarning() << "Script execution timed out. Cancelling...";
-				context->isCancelled.store(true);
-				PyGILState_STATE gstate = PyGILState_Ensure();
-				PyErr_SetInterrupt(); // Interrupt the Python interpreter
-				PyGILState_Release(gstate);
-			}
-			});
-		context->timeoutTimer->start(timeout);
+void PythonRunner::Impl::cleanupExecution(ScriptExecutionContext* context) {
+	executions.removeAll(context);
+	if (context->timeoutTimer) {
+		context->timeoutTimer->deleteLater();
 	}
-
-	// Connect to the finished signal to clean up
-	connect(context->watcher, &QFutureWatcher<PythonResult>::finished, this, [this, context]() {
-		// Stop the timer if it's still running
-		if (context->timeoutTimer && context->timeoutTimer->isActive()) {
-			context->timeoutTimer->stop();
-		}
-		// Cleanup
-		impl->executions.removeAll(context);
-		if (context->timeoutTimer) {
-			context->timeoutTimer->deleteLater();
-		}
-		context->watcher->deleteLater();
-		delete context;
-	});
-
-	return future;
-}
-
-void PythonRunner::cancel() {
-	impl->cancel();
-}
-
-PythonResult PythonRunner::checkSyntax(const QString& script) {
-	return impl->checkSyntax(script);
+	context->watcher->deleteLater();
+	delete context;
 }

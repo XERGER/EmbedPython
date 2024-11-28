@@ -1,6 +1,5 @@
 #pragma once
-#include <Python.h>  // Include Python headers without 'slots' macro interference
-
+#include <Python.h>
 #include <QVariant>
 #include <QJsonValue>
 
