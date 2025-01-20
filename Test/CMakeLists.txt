@@ -16,10 +16,10 @@ find_package(Qt6 COMPONENTS Core Network Test REQUIRED)
 # Add include directories and link the library
 add_executable(${PROJECT_NAME}
     test.cpp
-    #Test/Python.cpp
-    #Test/PythonEdgeCases.cpp
-    Test/ClientTest.cpp
-    Test/PythonPackages.cpp
+  # Test/Python.cpp
+  # Test/PythonEdgeCases.cpp
+   Test/ClientTest.cpp
+   Test/PythonPackages.cpp
 )
 
 if (WIN32)

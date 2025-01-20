@@ -1,37 +1,57 @@
-// PythonRunner.h
-#ifndef PYTHONRUNNER_H
-#define PYTHONRUNNER_H
+#pragma once
 
+#include "global.h"
 #include <QObject>
-#include <QFuture>
-#include <QFutureWatcher>
+#include <QProcess>
 #include <QTimer>
-#include <memory>
-#include <atomic>
+#include <QFuture>
+#include <QPromise>
+#include <QHash>
 #include "PythonResult.h"
 
-
-class PythonEnvironment;
-
-class LIBRARY_EXPORT PythonRunner : public QObject
-{
-	Q_OBJECT
+class LIBRARY_EXPORT PythonRunner : public QObject {
+    Q_OBJECT
 public:
-	explicit PythonRunner(std::shared_ptr<PythonEnvironment> const& pythonInstance, QObject* parent = nullptr);
-	~PythonRunner();
+    explicit PythonRunner(QObject* parent = nullptr);
+    ~PythonRunner();
 
-	PythonResult checkSyntax(const QString& script);
-	PythonResult runScript(const QString& script, const QVariantList& arguments = {}, int timeout = 0);
-	
-	QFuture<PythonResult> runScriptAsync(const QString& script, const QVariantList& arguments = {}, int timeout = 0);
 
-	void cancel(); // Modify to cancel all running scripts if necessary
+    QFuture<PythonResult> runScriptAsync(const QString& executionId, const QString& script, const QVariantList& arguments = {}, int timeout = -1);
+
+    /**
+     * @brief Cancels the execution of a script.
+     * @param executionId The unique identifier of the script execution to cancel.
+     * @return True if the execution was successfully canceled, false otherwise.
+     */
+    bool cancel(const QString& executionId);
+
+signals:
+    void scriptFinished(const QString& executionId, const PythonResult& result);
+
+private slots:
+    void onProcessFinished(int exitCode, QProcess::ExitStatus exitStatus);
+    void onProcessErrorOccurred(QProcess::ProcessError error);
+    void onTimeout();
 
 private:
-	std::shared_ptr<PythonEnvironment> pythonEnv;
+    QString pythonHome;
+    QString pythonExecutablePath;
+    QString getPythonExecutablePath() const;
+	QString getSitePackagesPath() const;
+	QString getDefaultEnvPath() const;
 
-	class Impl;
-	std::unique_ptr<Impl> impl; // Pimpl
+    struct ExecutionData {
+        QString executionId;
+
+        QProcess* process;
+        QTimer* timer;
+        QPromise<PythonResult> promise;
+        QElapsedTimer* elapsedTimer;
+    };
+
+    QHash<QString, ExecutionData*> executions;
+
+    void setupProcess(const QString& executionId, const QString& script, const QVariantList& arguments, int timeout);
+	void cleanUpExecutionData(const QString& executionId, ExecutionData* data);
+
 };
-
-#endif // PYTHONRUNNER_H

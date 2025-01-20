@@ -24,6 +24,11 @@ QString PythonResult::getErrorOutput() const
 	return errorOutput;
 }
 
+QString PythonResult::getExecutionId() const
+{
+	return executionId;
+}
+
 int PythonResult::getErrorCode() const
 {
 	return errorCode;

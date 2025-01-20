@@ -34,10 +34,12 @@ find_package(Qt6 COMPONENTS Core Concurrent REQUIRED)
 # find_package(Qt6 COMPONENTS Widgets REQUIRED)
 
 # Find Python3 packages
-find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
+#find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
 
 # Include directories for Python3
-include_directories(${Python3_INCLUDE_DIRS})
+#include_directories(${Python3_INCLUDE_DIRS})
+
+#qt_add_resources(${PROJECT_NAME}_RESOURCES resources.qrc)
 
 # Add the library
 add_library(${PROJECT_NAME} SHARED
@@ -47,10 +49,14 @@ add_library(${PROJECT_NAME} SHARED
     PythonResult.cpp
     PythonResult.h
     PythonRunner.cpp
-    PythonRunner.h
-    DataConverter.cpp
-    DataConverter.h
+    PythonRunner.h   
+    #WorkerPool.cpp
+    #WorkerPool.h
+    #DataConverter.cpp
+    #DataConverter.h
+#    resources.qrc
 )
+
 
 # Add compile options for Windows
 if (WIN32)
@@ -67,7 +73,7 @@ target_link_libraries(
     Qt6::Core
     Qt6::Concurrent
     PRIVATE
-    ${Python3_LIBRARIES}
+    #${Python3_LIBRARIES}
 )
 
 # Include directories

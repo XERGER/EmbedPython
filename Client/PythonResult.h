@@ -16,7 +16,7 @@ enum class OperationType {
 /**
  * @brief Encapsulates the result of Python script execution.
  */
-class LIBRARY_EXPORT PythonResult
+class PYTHHONCLIENT_EXPORT PythonResult
 {
 public:
     PythonResult();
@@ -24,8 +24,8 @@ public:
 
 
     QString getOutput() const;
+    QString getExecutionId()const;
     QString getErrorOutput() const;
-    QString getExecutionId() const;
     int getErrorCode() const;
     bool isSuccess() const;
 

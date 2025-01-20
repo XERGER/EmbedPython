@@ -10,24 +10,30 @@
 class PythonRunnerTest : public ::testing::Test {
 protected:
 	void SetUp() override {
-		pythonEnv = std::make_shared<PythonEnvironment>();
-		runner = new PythonRunner(pythonEnv, nullptr);
+
+		runner = std::make_shared<PythonRunner>( nullptr);
 	}
 
-	void TearDown() override {
-		delete runner;
-	}
-
-	std::shared_ptr<PythonEnvironment> pythonEnv;
-	PythonRunner* runner;
+	std::shared_ptr<PythonRunner> runner;
 };
 
 TEST_F(PythonRunnerTest, SynchronousExecutionSuccess) {
 	// Arrange
 	QString script = "result = 10 + 20\nprint(result)";
 
+	QSignalSpy spy(runner.get(), &PythonRunner::scriptFinished);
+
 	// Act
-	PythonResult result = runner->runScript(script);
+	QFuture<PythonResult> future = runner->runScriptAsync("uniqueExecutionId", script);
+
+	// Wait for the result
+	ASSERT_TRUE(spy.wait(3000));
+
+
+	// Get the result
+	PythonResult result = future.result();
+
+	qDebug() << "Script took " << result.getExecutionTime() << "ms";
 
 	// Assert
 	EXPECT_TRUE(result.isSuccess());
@@ -37,9 +43,16 @@ TEST_F(PythonRunnerTest, SynchronousExecutionSuccess) {
 TEST_F(PythonRunnerTest, SynchronousExecutionFailure) {
 	// Arrange
 	QString script = "raise Exception('Test error')";
+	QSignalSpy spy(runner.get(), &PythonRunner::scriptFinished);
 
 	// Act
-	PythonResult result = runner->runScript(script);
+	QFuture<PythonResult> future = runner->runScriptAsync("uniqueExecutionId", script);
+
+	// Wait for the result
+	ASSERT_TRUE(spy.wait(3000));
+
+	// Get the result
+	PythonResult result = future.result();
 
 	// Assert
 	EXPECT_FALSE(result.isSuccess());
@@ -53,7 +66,7 @@ TEST_F(PythonRunnerTest, AsynchronousExecutionSuccess) {
 	QSignalSpy spy(&watcher, &QFutureWatcher<PythonResult>::finished);
 
 	// Act
-	QFuture<PythonResult> future = runner->runScriptAsync(script);
+	QFuture<PythonResult> future = runner->runScriptAsync("uniqueExecutionId", script);
 	watcher.setFuture(future);
 
 	// Wait for the signal
@@ -74,7 +87,7 @@ TEST_F(PythonRunnerTest, AsynchronousExecutionWithCallback) {
 	QSignalSpy spy(&watcher, &QFutureWatcher<PythonResult>::finished);
 
 	// Act
-	QFuture<PythonResult> future = runner->runScriptAsync(script);
+	QFuture<PythonResult> future = runner->runScriptAsync("uniqueExecutionId", script);
 	watcher.setFuture(future);
 
 	// Wait for the signal
@@ -93,46 +106,54 @@ TEST_F(PythonRunnerTest, ExecutionTimeMeasurement) {
 	QString script = "import time\ntime.sleep(2)\nprint('Done')";
 	int timeout = 3000; // 3 seconds
 
+	QSignalSpy spy(runner.get(), &PythonRunner::scriptFinished);
+
 	// Act
-	PythonResult result = runner->runScript(script, {}, timeout);
+	QFuture<PythonResult> future = runner->runScriptAsync("uniqueExecutionId", script, {}, timeout);
+
+	// Wait for the result
+	ASSERT_TRUE(spy.wait(3000));
+
+	// Get the result
+	PythonResult result = future.result();
 
 	// Assert
 	EXPECT_TRUE(result.isSuccess());
 	EXPECT_GE(result.getExecutionTime(), 2000);
 }
-
-TEST_F(PythonRunnerTest, CheckSyntaxSuccess) {
-	// Arrange
-	QString script = "def foo():\n    return 'Hello, World!'\nfoo()";
-
-	// Act
-	PythonResult result = runner->checkSyntax(script);
-
-	// Assert
-	EXPECT_TRUE(result.isSuccess());
-	EXPECT_TRUE(result.getErrorOutput().isEmpty());
-}
-
-TEST_F(PythonRunnerTest, CheckSyntaxFailure) {
-	// Arrange
-	QString script = "def foo()\n    return 'Missing colon'";
-
-	// Act
-	PythonResult result = runner->checkSyntax(script);
-
-	// Assert
-	EXPECT_FALSE(result.isSuccess());
-	EXPECT_FALSE(result.getErrorOutput().isEmpty());
-}
-
-TEST_F(PythonRunnerTest, CheckSyntaxEmptyScript) {
-	// Arrange
-	QString script = "";
-
-	// Act
-	PythonResult result = runner->checkSyntax(script);
-
-	// Assert
-	EXPECT_FALSE(result.isSuccess());
-	EXPECT_EQ(result.getErrorOutput(), "Script is empty.");
-}
+// 
+// TEST_F(PythonRunnerTest, CheckSyntaxSuccess) {
+// 	// Arrange
+// 	QString script = "def foo():\n    return 'Hello, World!'\nfoo()";
+// 
+// 	// Act
+// 	PythonResult result = runner->checkSyntax(script);
+// 
+// 	// Assert
+// 	EXPECT_TRUE(result.isSuccess());
+// 	EXPECT_TRUE(result.getErrorOutput().isEmpty());
+// }
+// 
+// TEST_F(PythonRunnerTest, CheckSyntaxFailure) {
+// 	// Arrange
+// 	QString script = "def foo()\n    return 'Missing colon'";
+// 
+// 	// Act
+// 	PythonResult result = runner->checkSyntax(script);
+// 
+// 	// Assert
+// 	EXPECT_FALSE(result.isSuccess());
+// 	EXPECT_FALSE(result.getErrorOutput().isEmpty());
+// }
+// 
+// TEST_F(PythonRunnerTest, CheckSyntaxEmptyScript) {
+// 	// Arrange
+// 	QString script = "";
+// 
+// 	// Act
+// 	PythonResult result = runner->checkSyntax(script);
+// 
+// 	// Assert
+// 	EXPECT_FALSE(result.isSuccess());
+// 	EXPECT_EQ(result.getErrorOutput(), "Script is empty.");
+// }

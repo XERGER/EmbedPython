@@ -7,6 +7,7 @@
 #include <QJsonArray>
 #include <QVariantList>
 #include <QTimer>
+#include "PythonResult.h"
 
 /**
  * @brief The PythonClient class provides a client interface for communicating with a local server
@@ -27,18 +28,13 @@ public:
      * @brief Sends a command to install a package.
      * @param package The name of the package to install.
      */
-    void installPackage(const QString& package);
+    void installPackage(const QString& executionId, const QString& package);
 
     /**
      * @brief Sends a command to install a local package.
      * @param packagePath The file path to the local package.
      */
-    void installLocalPackage(const QString& packagePath);
-
-    /**
-     * @brief Sends a command to install an OpenAPI client.
-     */
-    void installOpenAPIClient();
+    void installLocalPackage(const QString& executionId, const QString& packagePath);
 
     /**
      * @brief Sends a command to run a Python script on the server.
@@ -62,17 +58,28 @@ public:
      */
     bool waitForServerReady();
 
+	void reinstallPackage(const QString& executionId, const QString& package);
+	void updatePackage(const QString& executionId, const QString& package);
+	void uninstallPackage(const QString& executionId, const QString& package);
+
+	// New package management methods
+	bool isPackageInstalled(const QString& executionId, const QString& package);
+	QString getPackageVersion(const QString& package);
+	QJsonObject getPackageInfo(const QString& package);
+
+	void upgradeAllPackages();
+	QStringList searchPackage(const QString& query);
+	QStringList listInstalledPackages();
+
 signals:
     /**
      * @brief Emitted when the client successfully connects to the server.
      */
     void connectedToServer();
 
-    /**
-     * @brief Emitted when data is received from the server.
-     * @param responseData The JSON object received from the server.
-     */
-    void dataReceived(QJsonObject responseData);
+	void scriptExecutionFinished(const PythonResult& result);
+	void packageOperationFinished(const PythonResult& result);
+	void packageOperationProgress(OperationType operation, const QString& progressMessage, const QString& executionId);
 
     /**
      * @brief Emitted when the client disconnects from the server.
@@ -103,6 +110,7 @@ private slots:
 private:
     QLocalSocket* socket;       ///< The local socket used for communication with the server.
     QTimer* reconnectTimer;     ///< Timer for retrying connection attempts.
+	QByteArray buffer; // Buffer to store incomplete data
 
     /**
      * @brief Encrypts and sends a command to the server.

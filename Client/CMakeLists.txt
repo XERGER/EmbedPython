@@ -31,7 +31,9 @@ endif()
 add_library(${PROJECT_NAME} SHARED
     global.h
     PythonClient.cpp
-    PythonClient.h
+    PythonClient.h  
+    PythonResult.cpp
+    PythonResult.h
     ServerController.cpp
     ServerController.h
     encryption.cpp
