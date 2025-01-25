@@ -16,6 +16,7 @@
 
 // Include PythonResult directly since it's now fully defined
 #include "Library/PythonResult.h"
+#include "Library/PythonSyntaxCheck.h"
 
 // Forward declarations for Python integration
 class PythonEnvironment;
@@ -49,6 +50,7 @@ private slots:
 	void onPackageOperationProgress(const QString& executionId, OperationType operation, const QString& identifier, const QString& progressMessage);
 	void onPackageOperationFinished(const QString& executionId, OperationType operation, const QString& identifier, const PythonResult& result);
 
+	void onSyntaxCheckFinished(const QString& executionId, const PythonResult& result);
 
 private:
 	// Command processing methods
@@ -85,6 +87,7 @@ private:
 	// Python Integration
 	std::shared_ptr<PythonEnvironment> pythonEnv;
 	std::unique_ptr<PythonRunner> pythonRunner;
+	std::unique_ptr<PythonSyntaxCheck> syntaxChecker;
 
 	// Mapping executionId to relevant data
 	QHash<QString, ExecutionData> executionMap;

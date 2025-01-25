@@ -94,7 +94,7 @@ void ServerController::startServer() {
         qDebug() << "Server is already running.";
         return;
     }
-   // killExistingServers();
+    killExistingServers();
     // Verify the hash of the executable
     if (!verifyHash(serverExecutablePath, expectedHash)) {
         emit hashMismatch();

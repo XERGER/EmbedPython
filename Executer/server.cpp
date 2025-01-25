@@ -21,11 +21,18 @@ Server::Server(QObject* parent)
 	: QObject(parent),
 	localServer(new QLocalServer(this)),
 	pythonEnv(std::make_shared<PythonEnvironment>()),
-	pythonRunner(std::make_unique<PythonRunner>( this)) {
+	pythonRunner(std::make_unique<PythonRunner>( this)),
+	syntaxChecker(std::make_unique<PythonSyntaxCheck>(this))
+
+{
 
 	connect(localServer, &QLocalServer::newConnection, this, &Server::onNewConnection);
 	connect(pythonEnv.get(), &PythonEnvironment::packageOperationFinished, this, &Server::onPackageOperationFinished);
 	connect(pythonEnv.get(), &PythonEnvironment::packageOperationProgress, this, &Server::onPackageOperationProgress);
+
+	connect(syntaxChecker.get(), &PythonSyntaxCheck::syntaxCheckFinished,
+		this, &Server::onSyntaxCheckFinished);
+
 }
 
 // Destructor
@@ -38,6 +45,38 @@ Server::~Server() {
 	}
 	localServer->close();
 }
+
+// Handle Syntax Check Finished
+void Server::onSyntaxCheckFinished(const QString& executionId, const PythonResult& result) {
+	// Find the client associated with this executionId
+	// Assuming you have a mapping from executionId to client
+	// If not, you need to implement such a mapping
+	QLocalSocket* client = executionMap.value(executionId).client;
+
+	if (!client) {
+		qWarning() << "No client found for executionId:" << executionId;
+		return;
+	}
+
+	QJsonObject responseObj;
+	responseObj["executionId"] = executionId;
+	responseObj["isScript"] = true;
+
+	if (result.isSuccess()) {
+		responseObj["status"] = "success";
+		responseObj["message"] = "Syntax is valid.";
+	}
+	else {
+		responseObj["status"] = "error";
+		responseObj["message"] = result.getErrorOutput();
+	}
+
+	sendResponse(client, responseObj);
+
+	// Optionally, remove the executionId from the map if no longer needed
+	executionMap.remove(executionId);
+}
+
 
 // Start Server
 void Server::startServer() {
@@ -223,6 +262,7 @@ void Server::handleListInstalledPackagesCommand(QLocalSocket* client, const QJso
 	responseObj["isScript"] = false;
 	sendResponse(client, responseObj);
 }
+
 void Server::handleGetPackageInfoCommand(QLocalSocket* client, const QJsonObject& obj) {
 	const auto package = obj["package"].toString();
 	const auto executionId = obj["executionId"].toString();
@@ -335,24 +375,19 @@ void Server::handleUninstallPackageCommand(QLocalSocket* client, const QJsonObje
 }
 // Handle Check Syntax Command
 void Server::handleCheckSyntaxCommand(QLocalSocket* client, const QJsonObject& obj) {
-// 	const auto script = obj["script"].toString();
-// 	const auto executionId = obj["executionId"].toString();
-// 	if (script.isEmpty()) {
-// 		sendErrorResponse(client, "Script is empty.", executionId);
-// 		return;
-// 	}
-// 	PythonResult syntaxResult = pythonRunner->checkSyntax(script);
-// 	QJsonObject responseObj;
-// 	if (syntaxResult.isSuccess()) {
-// 		responseObj["status"] = "success";
-// 		responseObj["message"] = "Syntax is valid.";
-// 	}
-// 	else {
-// 		responseObj["status"] = "error";
-// 		responseObj["message"] = syntaxResult.getErrorOutput();
-// 	}
-// 	responseObj["executionId"] = executionId;
-// 	sendResponse(client, responseObj);
+	const auto script = obj["script"].toString();
+	const auto executionId = obj["executionId"].toString();
+	if (script.isEmpty()) {
+		sendErrorResponse(client, "Script is empty.", executionId);
+		return;
+	}
+
+	ExecutionData execData;
+	execData.client = client;
+	executionMap.insert(executionId, execData);
+
+	// Initiate asynchronous syntax check
+	syntaxChecker->checkSyntaxAsync(executionId, script, /*timeout=*/ 5000); // Example timeout
 }
 
 // Handle Cancel Command

@@ -50,6 +50,8 @@ add_library(${PROJECT_NAME} SHARED
     PythonResult.h
     PythonRunner.cpp
     PythonRunner.h   
+    PythonSyntaxCheck.h   
+    PythonSyntaxCheck.cpp   
     #WorkerPool.cpp
     #WorkerPool.h
     #DataConverter.cpp
@@ -93,17 +95,10 @@ install(DIRECTORY ./
     PATTERN "*.h"
 )
 
-# Install targets for Debug and Release configurations
+# Install targets using generator expressions
 install(TARGETS ${PROJECT_NAME}
-    RUNTIME DESTINATION Debug/bin
-    LIBRARY DESTINATION Debug/lib
-    ARCHIVE DESTINATION Debug/lib
-    CONFIGURATIONS Debug
-)
-
-install(TARGETS ${PROJECT_NAME}
-    RUNTIME DESTINATION Release/bin
-    LIBRARY DESTINATION Release/lib
-    ARCHIVE DESTINATION Release/lib
-    CONFIGURATIONS Release
+    RUNTIME DESTINATION $<IF:$<CONFIG:Debug>,Debug/bin,Release/bin>
+    LIBRARY DESTINATION $<IF:$<CONFIG:Debug>,Debug/lib,Release/lib>
+    ARCHIVE DESTINATION $<IF:$<CONFIG:Debug>,Debug/lib,Release/lib>
+    CONFIGURATIONS Debug Release
 )

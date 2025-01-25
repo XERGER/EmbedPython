@@ -43,18 +43,21 @@ target_link_libraries(
     PythonClient
 )
 
-
-# Install targets for Debug and Release configurations
-install(TARGETS ${PROJECT_NAME}
-    RUNTIME DESTINATION Debug/bin
-    LIBRARY DESTINATION Debug/lib
-    ARCHIVE DESTINATION Debug/lib
-    CONFIGURATIONS Debug
-)
-
-install(TARGETS ${PROJECT_NAME}
-    RUNTIME DESTINATION Release/bin
-    LIBRARY DESTINATION Release/lib
-    ARCHIVE DESTINATION Release/lib
-    CONFIGURATIONS Release
-)
+# Conditional installation based on build type
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    message(STATUS "Configuring Debug installation")
+    install(TARGETS ${PROJECT_NAME}
+        RUNTIME DESTINATION Debug/bin
+        LIBRARY DESTINATION Debug/lib
+        ARCHIVE DESTINATION Debug/lib
+    )
+elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
+    message(STATUS "Configuring Release installation")
+    install(TARGETS ${PROJECT_NAME}
+        RUNTIME DESTINATION Release/bin
+        LIBRARY DESTINATION Release/lib
+        ARCHIVE DESTINATION Release/lib
+    )
+else()
+    message(WARNING "Unknown build type '${CMAKE_BUILD_TYPE}'. No installation performed for Debug or Release.")
+endif()

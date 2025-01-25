@@ -53,16 +53,10 @@ target_include_directories(
 
 include(GoogleTest)
 
+# Install targets using generator expressions
 install(TARGETS ${PROJECT_NAME}
-    RUNTIME DESTINATION Debug/bin
-    LIBRARY DESTINATION Debug/lib
-    ARCHIVE DESTINATION Debug/lib
-    CONFIGURATIONS Debug
-)
-
-install(TARGETS ${PROJECT_NAME}
-    RUNTIME DESTINATION Release/bin
-    LIBRARY DESTINATION Release/lib
-    ARCHIVE DESTINATION Release/lib
-    CONFIGURATIONS Release
+    RUNTIME DESTINATION $<IF:$<CONFIG:Debug>,Debug/bin,Release/bin>
+    LIBRARY DESTINATION $<IF:$<CONFIG:Debug>,Debug/lib,Release/lib>
+    ARCHIVE DESTINATION $<IF:$<CONFIG:Debug>,Debug/lib,Release/lib>
+    CONFIGURATIONS Debug Release
 )
