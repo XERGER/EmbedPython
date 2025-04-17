@@ -358,24 +358,54 @@ void PythonEnvironment::performPackageOperation(QString const& executionId, Oper
 		return;
 	}
 
-	QProcess* process = new QProcess();
-	QProcessEnvironment environment;
+	// 1. Start with system env
+	QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
 
+	// 2. Remove Python vars
+	environment.remove("PYTHONHOME");
+	environment.remove("PYTHONPATH");
 
+	// 3. Filter out any Python directories from PATH
+	const auto oldPath = environment.value("PATH");
+	QStringList pathParts = oldPath.split(';', Qt::SkipEmptyParts);
+	QStringList filteredParts;
+	for (const auto& p : pathParts) {
+		if (!p.contains("python", Qt::CaseInsensitive)) {
+			filteredParts << p;
+		}
+	}
+
+	// 4. Build new PATH, prepending your Python bin/Scripts
+#ifdef Q_OS_WIN
+	// Example: pythonHome might be "C:/MyApp/python"
+	const QString pythonBinPath = QDir(pythonHome).filePath("Scripts");
+	const QString pythonExe = QDir(pythonHome).filePath("python.exe");
+#else
+	// Example: pythonHome might be "/opt/MyApp/python"
+	const QString pythonBinPath = QDir(pythonHome).filePath("bin");
+	const QString pythonExe = QDir(pythonBinPath).filePath("python3");
+#endif
+	const QString newPath = getDefaultEnvPath() + ";" + pythonBinPath + ";" + filteredParts.join(';');
+	environment.insert("PATH", newPath);
+
+	// 5. Insert your Python environment
+	environment.insert("PYTHONHOME", pythonHome);
 	environment.insert("PYTHONPATH", getSitePackagesPath());
-	environment.insert("PYTHONHOME", getDefaultEnvPath());
-	environment.insert("PATH", getDefaultEnvPath() + ";" + getPythonExecutablePath());
+
+	// 6. Configure QProcess
+	QProcess* process = new QProcess();
+	process->setProcessEnvironment(environment);
 	//env.insert("PYTHONUNBUFFERED", "1");
 	process->setArguments(args);
 	process->setProgram(getPythonExecutablePath());
 	//process->setProcessEnvironment(environment);
 	process->setWorkingDirectory(getDefaultEnvPath());
 
-	qDebug() << getPythonExecutablePath() << args.join(" ");
-	qDebug() << "Environment Variables:";
-	foreach(const QString & key, environment.keys()) {
-		qDebug() << key << "=" << environment.value(key);
-	}
+//	qDebug() << getPythonExecutablePath() << args.join(" ");
+// 	qDebug() << "Environment Variables:";
+// 	foreach(const QString & key, environment.keys()) {
+// 		qDebug() << key << "=" << environment.value(key);
+// 	}
 
 	// Connect process signals
 	connect(process, &QProcess::readyReadStandardOutput, this, [this, executionId, process, operation, identifier]() {

@@ -67,7 +67,7 @@ ServerController::ServerController(QString const& enginePath, QObject* parent)
     : QObject(parent), expectedHash(QByteArray::fromHex("79a9490751578b27ca7b7f559c134f464342582c5a03049b63d7ed8fd5ea73dd")) { // Replace with your actual hash
     
 	if (QFile::exists(enginePath)) {
-	
+		killExistingServers();
 	}
 	else {
 		qCritical() << "Engine executable not found at:" << enginePath;
@@ -94,7 +94,7 @@ void ServerController::startServer() {
         qDebug() << "Server is already running.";
         return;
     }
-    killExistingServers();
+
     // Verify the hash of the executable
     if (!verifyHash(serverExecutablePath, expectedHash)) {
         emit hashMismatch();

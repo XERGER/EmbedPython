@@ -43,23 +43,29 @@ TEST_F(ClientTest, RunScriptSuccess) {
 
 	const auto script = "result = 10 + 20\nprint(result)";
 
-	QSignalSpy readyReadSpy(&client, &PythonClient::scriptExecutionFinished);
+	QSignalSpy readyReadSpy1(&client, &PythonClient::scriptExecutionFinished);
+	QSignalSpy readyReadSpy2(&client, &PythonClient::scriptOutput);
 
 	const auto newExecutionId = QUuid::createUuid().toString();
 
 	client.runScript(newExecutionId, script, {});
 
-	ASSERT_TRUE(readyReadSpy.wait(120000)) << "Did not receive a response within the timeout.";
+	ASSERT_TRUE(readyReadSpy2.wait(120000)) << "Did not receive a response within the timeout.";
+	ASSERT_TRUE(readyReadSpy1.wait(120000)) << "Did not receive a response within the timeout.";
 
 	// Check if the signal was emitted before accessing it
-	ASSERT_GT(readyReadSpy.count(), 0) << "No signals captured by readyReadSpy.";
+	ASSERT_GT(readyReadSpy1.count(), 0) << "No signals captured by readyReadSpy.";
 
 	// Safely retrieve the first signal
-	QList<QVariant> arguments = readyReadSpy.takeFirst();
+	QList<QVariant> arguments = readyReadSpy1.takeFirst();
 	const auto uninstallation = arguments.at(0).value<PythonResult>();
+	
+	// Safely retrieve the first signal
+	QList<QVariant> arguments2 = readyReadSpy2.takeFirst();
+	const auto uninstallation2 = arguments2.at(1).value<QString>();
 
 	EXPECT_TRUE(uninstallation.isSuccess());
-	EXPECT_EQ(uninstallation.getOutput(), "30\r\n");
+	EXPECT_EQ(uninstallation2, "30\r\n");
 	EXPECT_EQ(uninstallation.getExecutionId(), newExecutionId);
 
 

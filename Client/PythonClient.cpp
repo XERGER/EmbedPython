@@ -100,6 +100,19 @@ bool PythonClient::waitForServerReady() {
 	return false;
 }
 
+bool PythonClient::cancel(QString const& executionId)
+{
+	if (!socket->isOpen()) {
+		qWarning() << "Socket is not connected to the server.";
+		return false;
+	}
+	QJsonObject command;
+	command["command"] = "cancel";
+	command["executionId"] = executionId;
+	sendCommand(command);
+	return true;
+}
+
 QJsonArray PythonClient::serializeVariantList(const QVariantList& arguments) {
 	QJsonArray array;
 	for (const QVariant& arg : arguments) {
@@ -173,7 +186,7 @@ void PythonClient::onReadyRead() {
 			continue;
 		}
 		QJsonObject response = doc.object();
-		qDebug() << "Received response from server:" << response;
+		//qDebug() << "Received response from server:" << response;
 		QString status = response.value("status").toString();
 		QString executionId = response.value("executionId").toString();
 		bool isScript = response.value("isScript").toBool(false);
@@ -185,6 +198,15 @@ void PythonClient::onReadyRead() {
 			continue;
 		}
 		if (isScript) {
+
+			bool partialOutput = response.value("partialOutput").toBool(false);
+
+			if (partialOutput) {
+				QString message = response.value("stdout").toString();
+				emit scriptOutput(executionId, message);
+				continue;
+			}
+
 			PythonResult result;
 			result = PythonResult(
 				executionId,

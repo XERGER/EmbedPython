@@ -70,21 +70,15 @@ int main(int argc, char* argv[])
 {
 	QCoreApplication a(argc, argv);
 
-
-
 	recreateLogFile();
 
 
 	qInstallMessageHandler(customMessageHandler);
 
-
-
-
 	Server server;
 	server.startServer();
 
 	int ret = a.exec();
-
 
 	return ret;
 }

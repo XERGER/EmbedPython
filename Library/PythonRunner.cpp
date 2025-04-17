@@ -6,7 +6,7 @@
 #include <QPointer>
 
 PythonRunner::PythonRunner(QObject* parent)
-	: QObject(parent), pythonHome(getDefaultEnvPath()), pythonExecutablePath(getPythonExecutablePath())
+	: QObject(parent), pythonHome(getDefaultEnvPath()), pythonExecutablePath(getPythonExecutablePath()), environment(createEnviornment())
 {
 }
 
@@ -44,30 +44,81 @@ QString PythonRunner::getDefaultEnvPath() const {
 	pythonDir.cd("python");
 	return pythonDir.absolutePath();
 }
-QFuture<PythonResult> PythonRunner::runScriptAsync(const QString& executionId, const QString& script, const QVariantList& arguments, int timeout) {
+
+
+QProcessEnvironment PythonRunner::createEnviornment() const {
+	QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+
+	// 2. Remove Python vars
+	environment.remove("PYTHONHOME");
+	environment.remove("PYTHONPATH");
+
+#if defined(Q_OS_WIN)
+	static const QChar PATH_SEP(';');
+#else
+	static const QChar PATH_SEP(':');
+#endif
+
+	// 3. Filter out any Python directories from PATH
+	const auto oldPath = environment.value("PATH");
+	QStringList pathParts = oldPath.split(PATH_SEP, Qt::SkipEmptyParts);
+	for (int i = pathParts.size() - 1; i >= 0; --i) {
+		if (pathParts[i].contains("python", Qt::CaseInsensitive)) {
+			pathParts.removeAt(i);
+		}
+	}
+
+	// 4. Build new PATH, prepending your Python bin/Scripts
+#ifdef Q_OS_WIN
+	// Example: pythonHome might be "C:/MyApp/python"
+	const QString pythonBinPath = QDir(pythonHome).filePath("Scripts");
+#else
+	// Example: pythonHome might be "/opt/MyApp/python"
+	const QString pythonBinPath = QDir(pythonHome).filePath("bin");
+#endif
+	const QString newPath = pythonBinPath + PATH_SEP + pathParts.join(PATH_SEP);
+	environment.insert("PATH", newPath);
+
+	// 5. Insert your Python environment
+	environment.insert("PYTHONHOME", pythonHome);
+	environment.insert("PYTHONPATH", getSitePackagesPath());
+	QString homePath = QDir::homePath();
+
+	// 2. Insert environment variables (instead of setting them in the script)
+	environment.insert("HOME", homePath);
+	environment.insert("MPLCONFIGDIR", homePath);
+	environment.insert("USERPROFILE", homePath);
+	environment.insert("PYTHONUTF8", "1");
+
+	return environment;
+}
+
+
+
+QFuture<PythonResult> PythonRunner::runScriptAsync(const QString& executionId,
+	const QString& script,
+	const QVariantList& arguments,
+	int timeout)
+{
 	QPromise<PythonResult> promise;
 	QFuture<PythonResult> future = promise.future();
 
-	QProcess* process = new QProcess();
-	QProcessEnvironment environment;
-
-
-	environment.insert("PYTHONPATH", getSitePackagesPath());
-	environment.insert("PYTHONHOME", getDefaultEnvPath());
-	//env.insert("PYTHONUNBUFFERED", "1");
-
-
-	process->setProgram(pythonExecutablePath); // Adjust as needed
-	QStringList procArguments;
-	procArguments << "-c" << script;
-	process->setArguments(procArguments);
-	process->setWorkingDirectory(getDefaultEnvPath());
-
+	// 6. Configure QProcess
+	QProcess* process = new QProcess(this);
 	process->setProcessEnvironment(environment);
+	process->setProgram(pythonExecutablePath);
+	process->setWorkingDirectory(pythonHome); // optional
+	//process->setProcessChannelMode(QProcess::MergedChannels);
 
-	QElapsedTimer* elapsedTimer = new QElapsedTimer();
-	elapsedTimer->start();
+	QStringList procArgs;
+	procArgs << "-u" << "-c" << script;
+	// Optional script arguments:
+	// for (const auto &arg : arguments) {
+	//     procArgs << arg.toString();
+	// }
+	process->setArguments(procArgs);
 
+	// 7. Optional timeout
 	QTimer* timeoutTimer = nullptr;
 	if (timeout != -1) {
 		timeoutTimer = new QTimer(this);
@@ -75,28 +126,40 @@ QFuture<PythonResult> PythonRunner::runScriptAsync(const QString& executionId, c
 		timeoutTimer->setInterval(timeout);
 	}
 
-	ExecutionData* data = new ExecutionData{ executionId, process, timeoutTimer, std::move(promise), elapsedTimer };
+	QElapsedTimer* elapsedTimer = new QElapsedTimer();
+	elapsedTimer->start();
+
+	auto* data = new ExecutionData{
+		executionId, process, timeoutTimer, std::move(promise), elapsedTimer
+	};
 	executions.insert(executionId, data);
 
+	// 	// Connect the new output slot
+	connect(process, &QProcess::readyReadStandardOutput,
+		this, &PythonRunner::onProcessReadyReadStandardOutput);
 
+	// 8. Connect signals
 	connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
 		this, &PythonRunner::onProcessFinished);
+
 	connect(process, &QProcess::errorOccurred,
 		this, &PythonRunner::onProcessErrorOccurred);
 
+
+
 	if (timeoutTimer) {
-		connect(timeoutTimer, &QTimer::timeout,
-			this, &PythonRunner::onTimeout);
+		connect(timeoutTimer, &QTimer::timeout, this, &PythonRunner::onTimeout);
 	}
 
+	// 9. Start
 	process->start();
 
-	if (timeoutTimer && timeout != -1) {
-		timeoutTimer->start();
-	}
+	if (timeoutTimer) timeoutTimer->start();
+	
 
 	return future;
 }
+
 
 void PythonRunner::onTimeout() {
 	QTimer* senderTimer = qobject_cast<QTimer*>(sender());
@@ -145,34 +208,37 @@ void PythonRunner::cleanUpExecutionData(const QString& executionId, ExecutionDat
 	executions.remove(executionId);
 }
 
+PythonRunner::ExecutionData* PythonRunner::getExecutionDataFromProcess(QProcess* process) const
+{
+	ExecutionData* data = nullptr;
+
+	for (auto it = executions.begin(); it != executions.end() && !data; ++it) 
+		if (it.value()->process == process) data = it.value();
+		
+	return data;
+}
+
 void PythonRunner::onProcessFinished(int exitCode, QProcess::ExitStatus exitStatus) {
-	QProcess* senderProc = qobject_cast<QProcess*>(sender());
+	const auto senderProc = qobject_cast<QProcess*>(sender());
 	if (!senderProc)
 		return;
 
-	QString executionId;
-	ExecutionData* data = nullptr;
-
-	for (auto it = executions.begin(); it != executions.end(); ++it) {
-		if (it.value()->process == senderProc) {
-			executionId = it.key();
-			data = it.value();
-			break;
-		}
-	}
+	const auto data = getExecutionDataFromProcess(senderProc);
 
 	if (!data) {
 		senderProc->deleteLater();
 		return;
 	}
 
+	const auto executionId = data->executionId;
+
 	if (data->timer) {
 		data->timer->stop();
 		data->timer->deleteLater();
 	}
 
-	QString output = senderProc->readAllStandardOutput();
-	QString errorOutput = senderProc->readAllStandardError();
+	const auto output = senderProc->readAllStandardOutput();
+	const auto errorOutput = senderProc->readAllStandardError();
 	bool success = (exitStatus == QProcess::NormalExit) && (exitCode == 0);
 
 	PythonResult result(executionId, success, output, errorOutput, data->elapsedTimer->elapsed());
@@ -185,36 +251,31 @@ void PythonRunner::onProcessFinished(int exitCode, QProcess::ExitStatus exitStat
 }
 
 void PythonRunner::onProcessErrorOccurred(QProcess::ProcessError error) {
-	QProcess* senderProc = qobject_cast<QProcess*>(sender());
-	if (!senderProc)
-		return;
 
-	QString executionId;
-	ExecutionData* data = nullptr;
-	for (auto it = executions.begin(); it != executions.end(); ++it) {
-		if (it.value()->process == senderProc) {
-			executionId = it.key();
-			data = it.value();
-			break;
-		}
-	}
+	const auto senderProc = qobject_cast<QProcess*>(sender());
+	
+	if (!senderProc) return;
+
+	const auto data = getExecutionDataFromProcess(senderProc);
 
 	if (!data) {
 		senderProc->deleteLater();
 		return;
 	}
 
+	const auto executionId = data->executionId;
+
 	data->timer->stop();
 	data->timer->deleteLater();
 
-	QString output = senderProc->readAllStandardOutput();
-	QString errorOutput = senderProc->readAllStandardError();
-	PythonResult result(data->executionId, false, output, errorOutput + " Process error occurred.", 0);
+	const auto output = senderProc->readAllStandardOutput();
+	const auto errorOutput = senderProc->readAllStandardError();
+	PythonResult result(data->executionId, false, output, errorOutput + " Process error occurred.", data->elapsedTimer->elapsed());
 
 	data->promise.addResult(result);
 	data->promise.finish();
 
-	emit scriptFinished(executionId, result);
+
 	cleanUpExecutionData(executionId, data);
 }
 
@@ -226,17 +287,52 @@ bool PythonRunner::cancel(const QString& executionId) {
 
 	ExecutionData* data = executions.value(executionId);
 
-	if (data->process->state() != QProcess::NotRunning) {
-		data->process->kill(); // Terminate the process
-		data->process->waitForFinished(1000);
+
+	if (!data) return false;
+
+	executions.remove(executionId);
+
+	const auto processToKill = data->process;
+
+
+	if (processToKill->state() != QProcess::NotRunning) {
+		processToKill->kill(); // Terminate the process
 	}
 
+	if (data->timer) {
+		data->timer->stop();
+		data->timer->deleteLater();
+	}
+	
+	const auto output = processToKill->readAllStandardOutput();
+	processToKill->deleteLater();
+
 	// Set the promise result to indicate cancellation
-	PythonResult canceledResult(executionId, false, "", "Execution canceled by user.", 0);
+
+	PythonResult canceledResult(executionId, false, output, "Execution canceled by user.", data->elapsedTimer->elapsed());
 	data->promise.addResult(canceledResult);
 	data->promise.finish();
 
-	cleanUpExecutionData(executionId, data);
+	delete data->elapsedTimer;
+	delete data;
+
+
+	emit scriptFinished(executionId, canceledResult);
 
 	return true;
+}
+
+void PythonRunner::onProcessReadyReadStandardOutput()
+{
+	QProcess* proc = qobject_cast<QProcess*>(sender());
+	if (!proc) return;
+
+	ExecutionData* data = getExecutionDataFromProcess(proc);
+	if (!data) return;
+
+	// Read whatever is currently available from stdout
+	QString chunk = proc->readAllStandardOutput();
+
+	// Emit the signal for partial output
+	emit scriptOutput(data->executionId, chunk);
 }

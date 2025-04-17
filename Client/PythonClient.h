@@ -8,7 +8,7 @@
 #include <QVariantList>
 #include <QTimer>
 #include "PythonResult.h"
-
+//#TODO MAKE CONST
 /**
  * @brief The PythonClient class provides a client interface for communicating with a local server
  * using QLocalSocket. It supports commands for installing packages, running scripts, and checking script syntax.
@@ -58,7 +58,9 @@ public:
      */
     bool waitForServerReady();
 
-	void reinstallPackage(const QString& executionId, const QString& package);
+    bool cancel(QString const& executionId);
+
+    void reinstallPackage(const QString& executionId, const QString& package);
 	void updatePackage(const QString& executionId, const QString& package);
 	void uninstallPackage(const QString& executionId, const QString& package);
 
@@ -80,6 +82,7 @@ signals:
 	void scriptExecutionFinished(const PythonResult& result);
 	void packageOperationFinished(const PythonResult& result);
 	void packageOperationProgress(OperationType operation, const QString& progressMessage, const QString& executionId);
+	void scriptOutput(const QString& executionId, const QString& message);
 
     /**
      * @brief Emitted when the client disconnects from the server.

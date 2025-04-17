@@ -51,7 +51,7 @@ private slots:
 	void onPackageOperationFinished(const QString& executionId, OperationType operation, const QString& identifier, const PythonResult& result);
 
 	void onSyntaxCheckFinished(const QString& executionId, const PythonResult& result);
-
+	void onScriptOutput(const QString& executionId, const QString& message);
 private:
 	// Command processing methods
 	void processCommand(QLocalSocket* client, const QJsonObject& obj);

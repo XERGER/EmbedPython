@@ -33,6 +33,9 @@ Server::Server(QObject* parent)
 	connect(syntaxChecker.get(), &PythonSyntaxCheck::syntaxCheckFinished,
 		this, &Server::onSyntaxCheckFinished);
 
+	connect(pythonRunner.get(), &PythonRunner::scriptOutput,
+		this, &Server::onScriptOutput);
+
 }
 
 // Destructor
@@ -75,6 +78,29 @@ void Server::onSyntaxCheckFinished(const QString& executionId, const PythonResul
 
 	// Optionally, remove the executionId from the map if no longer needed
 	executionMap.remove(executionId);
+}
+
+
+void Server::onScriptOutput(const QString& executionId, const QString& chunk)
+{
+	// Typically, you have a way of tracking which client initiated this script:
+	// For example, your `executionMap` might map the executionId to a client socket:
+	QLocalSocket* client = executionMap.value(executionId).client;
+	if (!client) {
+		qWarning() << "No client found for executionId:" << executionId;
+		return;
+	}
+
+	// Build a JSON telling the client that this is partial output
+	QJsonObject responseObj;
+	responseObj["executionId"] = executionId;
+	responseObj["isScript"] = true;         // or however your app indicates script
+	responseObj["partialOutput"] = true;        // the client can check this
+	responseObj["stdout"] = chunk;        // partial text chunk
+
+	// Send to the correct client
+	sendResponse(client, responseObj);
+
 }
 
 
@@ -425,6 +451,11 @@ void Server::handleExecuteCommand(QLocalSocket* client, const QJsonObject& obj) 
 		sendErrorResponse(client, "Execution ID is empty.");
 		return;
 	}
+
+	ExecutionData execData;
+	execData.client = client;
+	executionMap.insert(executionId, execData);
+
 	const auto future = pythonRunner->runScriptAsync(executionId, script, arguments, timeout);
 	auto watcher = new QFutureWatcher<PythonResult>(this);
 	connect(watcher, &QFutureWatcher<PythonResult>::finished, this,
@@ -453,6 +484,7 @@ void Server::handleScriptExecutionResult(QFutureWatcher<PythonResult>* watcher, 
 
 	sendResponse(client, responseObj);
 	watcher->deleteLater();
+	executionMap.remove(executionId);
 }
 
 // Handle Missing Modules

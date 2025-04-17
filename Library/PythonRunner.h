@@ -28,18 +28,24 @@ public:
 signals:
     void scriptFinished(const QString& executionId, const PythonResult& result);
 
+	void scriptOutput(const QString& executionId, const QString& message);
+
 private slots:
     void onProcessFinished(int exitCode, QProcess::ExitStatus exitStatus);
     void onProcessErrorOccurred(QProcess::ProcessError error);
     void onTimeout();
+	void onProcessReadyReadStandardOutput();
 
 private:
+
     QString pythonHome;
     QString pythonExecutablePath;
+    QProcessEnvironment environment;
     QString getPythonExecutablePath() const;
 	QString getSitePackagesPath() const;
 	QString getDefaultEnvPath() const;
 
+    QProcessEnvironment createEnviornment() const;
     struct ExecutionData {
         QString executionId;
 
@@ -51,7 +57,8 @@ private:
 
     QHash<QString, ExecutionData*> executions;
 
-    void setupProcess(const QString& executionId, const QString& script, const QVariantList& arguments, int timeout);
+
 	void cleanUpExecutionData(const QString& executionId, ExecutionData* data);
 
+    ExecutionData* getExecutionDataFromProcess(QProcess* process) const;
 };
