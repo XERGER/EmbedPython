@@ -400,6 +400,27 @@ void PythonClient::upgradeAllPackages() {
 	sendCommand(command);
 }
 
+void PythonClient::initEnvironment(const QString& executionId,
+	const QString& payload,
+	int            maxIdle,
+	int            maxTotal)
+{
+	if (!socket->isOpen()) {
+		attemptReconnect();
+		if (!socket->isOpen()) {
+			qWarning() << "Cannot init: not connected to server.";
+			return;
+		}
+	}
+	QJsonObject cmd;
+	cmd["command"] = "init";
+	cmd["payload"] = payload;
+	cmd["maxIdle"] = maxIdle;
+	cmd["maxTotal"] = maxTotal;
+	cmd["executionId"] = executionId;
+	sendCommand(cmd);
+}
+
 QStringList PythonClient::searchPackage(const QString& query) {
 	if (!socket->isOpen()) {
 		qWarning() << "Socket is not connected to the server.";

@@ -1,4 +1,4 @@
-// server.cpp
+﻿// server.cpp
 
 #include "server.h"
 #include <QJsonDocument>
@@ -255,7 +255,8 @@ void Server::processCommand(QLocalSocket* client, const QJsonObject& obj) {
 		{"searchPackage", [&](QLocalSocket* c, const QJsonObject& o) { handleSearchPackageCommand(c, o); }},
 		{"getPackageInfo", [&](QLocalSocket* c, const QJsonObject& o) { handleGetPackageInfoCommand(c, o); }},
 		{"listInstalledPackages", [&](QLocalSocket* c, const QJsonObject& o) { handleListInstalledPackagesCommand(c, o); }},
-		{"cancel", [&](QLocalSocket* c, const QJsonObject& o) { handleCancelCommand(c, o); }}
+		{"cancel", [&](QLocalSocket* c, const QJsonObject& o) { handleCancelCommand(c, o); }},
+		{"init", [&](QLocalSocket* c, const QJsonObject& o) { handleInitCommand(c, o); }}
 	};
 
 	auto handler = commandHandlers.value(command, nullptr);
@@ -465,6 +466,7 @@ void Server::handleExecuteCommand(QLocalSocket* client, const QJsonObject& obj) 
 	watcher->setFuture(future);
 }
 
+
 // Handle Script Execution Result
 void Server::handleScriptExecutionResult(QFutureWatcher<PythonResult>* watcher, QLocalSocket* client, const QString& executionId, const QString& script, const QVariantList& arguments) {
 	const auto result = watcher->future().result();
@@ -641,6 +643,28 @@ void Server::handleUpdateLocalPackageCommand(QLocalSocket* client, const QJsonOb
 	responseObj["executionId"] = executionId;
 	responseObj["isScript"] = false;
 	sendResponse(client, responseObj);
+}
+
+
+void Server::handleInitCommand(QLocalSocket* client, const QJsonObject& obj)
+{
+	const QString script = obj.value("payload").toString();
+	const int     maxIdle = obj.value("maxIdle").toInt(3);
+	const int     maxTotal = obj.value("maxTotal").toInt(10);
+	const QString executionId = obj.value("executionId").toString();   // optional
+
+	if (script.isEmpty()) {
+		sendErrorResponse(client, "Init‑payload is empty.", executionId);
+		return;
+	}
+
+	const bool ok = pythonRunner->init(script, maxIdle, maxTotal);
+
+	QJsonObject resp;
+	resp["status"] = ok ? "success" : "alreadyInitialized";
+	resp["executionId"] = executionId;
+	resp["isScript"] = false;
+	sendResponse(client, resp);
 }
 
 // Send Error Response

@@ -70,7 +70,8 @@ public:
 	QJsonObject getPackageInfo(const QString& package);
 
 	void upgradeAllPackages();
-	QStringList searchPackage(const QString& query);
+    void initEnvironment(const QString& executionId, const QString& payload, int maxIdle, int maxTotal);
+    QStringList searchPackage(const QString& query);
 	QStringList listInstalledPackages();
 
 signals:

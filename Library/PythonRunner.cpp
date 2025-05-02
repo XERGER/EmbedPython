@@ -1,338 +1,412 @@
-#include "PythonRunner.h"
+﻿#include "PythonRunner.h"
+
 #include <QCoreApplication>
-#include <QDebug>
 #include <QDir>
-#include <QProcessEnvironment>
-#include <QPointer>
+#include <algorithm>
 
-PythonRunner::PythonRunner(QObject* parent)
-	: QObject(parent), pythonHome(getDefaultEnvPath()), pythonExecutablePath(getPythonExecutablePath()), environment(createEnviornment())
+
+namespace            // helpers local to this TU
 {
-}
+	inline constexpr QLatin1String kSentinel{ "__INIT_DONE__" };
 
-PythonRunner::~PythonRunner() {
-	// Clean up any remaining executions
-	for (auto data : executions) {
-		if (data->process->state() != QProcess::NotRunning) {
-			data->process->kill();
-		}
-		data->process->deleteLater();
-		data->timer->deleteLater();
-		data->promise.finish();
-		delete data;
+	inline QByteArray wrap(QStringView src)
+	{
+		const QByteArray body = src.toUtf8().toHex();   // ASCII‑only
+		return QByteArrayLiteral(
+			"import textwrap,sys;exec(compile(bytes.fromhex('") +
+			body +
+			QByteArrayLiteral(
+				"').decode(),'<init>','exec'))\n");
 	}
-}
 
-// Getter functions
-QString PythonRunner::getPythonExecutablePath() const {
+/* ────────── helpers ─────────────────────────────────────────── */
+
+} // namespace
+QString PythonRunner::sitePackages(const QString& home)
+{
 #ifdef Q_OS_WIN
-	return QDir(pythonHome).filePath("python.exe");
+	return QDir(home).filePath("Lib/site-packages");
 #else
-	return QDir(pythonHome).filePath("bin/python3");
+	return QDir(home).filePath("lib/python3.11/site-packages");
 #endif
 }
-
-QString PythonRunner::getSitePackagesPath() const {
-	QDir pythonEnvDir(getDefaultEnvPath());
-	pythonEnvDir.cd("Lib"); // Navigate to the Lib directory
-	pythonEnvDir.cd("site-packages"); // Navigate to the site-packages directory
-	return pythonEnvDir.absolutePath();
+/* static */ QString PythonRunner::detectPythonHome()
+{
+	QDir d(QCoreApplication::applicationDirPath());
+	d.cd("python");
+	return d.absolutePath();
 }
-
-QString PythonRunner::getDefaultEnvPath() const {
-	QDir pythonDir(QCoreApplication::applicationDirPath());
-	pythonDir.cd("python");
-	return pythonDir.absolutePath();
+/* static */ QString PythonRunner::detectPythonExe(const QString& home)
+{
+#ifdef Q_OS_WIN
+	return QDir(home).filePath("python.exe");
+#else
+	return QDir(home).filePath("bin/python3");
+#endif
 }
-
-
-QProcessEnvironment PythonRunner::createEnviornment() const {
-	QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
-
-	// 2. Remove Python vars
-	environment.remove("PYTHONHOME");
-	environment.remove("PYTHONPATH");
+/* static */ QProcessEnvironment PythonRunner::makeEnv(const QString& home)
+{
+	QProcessEnvironment e = QProcessEnvironment::systemEnvironment();
+	e.remove("PYTHONHOME");
+	e.remove("PYTHONPATH");
 
 #if defined(Q_OS_WIN)
-	static const QChar PATH_SEP(';');
+	constexpr QChar SEP = u';';
 #else
-	static const QChar PATH_SEP(':');
+	constexpr QChar SEP = u':';
 #endif
-
-	// 3. Filter out any Python directories from PATH
-	const auto oldPath = environment.value("PATH");
-	QStringList pathParts = oldPath.split(PATH_SEP, Qt::SkipEmptyParts);
-	for (int i = pathParts.size() - 1; i >= 0; --i) {
-		if (pathParts[i].contains("python", Qt::CaseInsensitive)) {
-			pathParts.removeAt(i);
-		}
-	}
-
-	// 4. Build new PATH, prepending your Python bin/Scripts
+	/* purge foreign pythons from PATH */
+	auto parts = e.value("PATH").split(SEP, Qt::SkipEmptyParts);
+	parts.erase(std::remove_if(parts.begin(), parts.end(),
+		[](const QString& s)
+		{ return s.contains("python", Qt::CaseInsensitive); }),
+		parts.end());
 #ifdef Q_OS_WIN
-	// Example: pythonHome might be "C:/MyApp/python"
-	const QString pythonBinPath = QDir(pythonHome).filePath("Scripts");
+	const QString bin = QDir(home).filePath("Scripts");
 #else
-	// Example: pythonHome might be "/opt/MyApp/python"
-	const QString pythonBinPath = QDir(pythonHome).filePath("bin");
+	const QString bin = QDir(home).filePath("bin");
 #endif
-	const QString newPath = pythonBinPath + PATH_SEP + pathParts.join(PATH_SEP);
-	environment.insert("PATH", newPath);
+	e.insert("PATH", bin + SEP + parts.join(SEP));
+	e.insert("PYTHONHOME", home);
+	e.insert("PYTHONPATH", sitePackages(home));
 
-	// 5. Insert your Python environment
-	environment.insert("PYTHONHOME", pythonHome);
-	environment.insert("PYTHONPATH", getSitePackagesPath());
-	QString homePath = QDir::homePath();
-
-	// 2. Insert environment variables (instead of setting them in the script)
-	environment.insert("HOME", homePath);
-	environment.insert("MPLCONFIGDIR", homePath);
-	environment.insert("USERPROFILE", homePath);
-	environment.insert("PYTHONUTF8", "1");
-
-	return environment;
+	const QString hp = QDir::homePath();
+	e.insert("HOME", hp);
+	e.insert("MPLCONFIGDIR", hp);
+	e.insert("USERPROFILE", hp);
+	e.insert("PYTHONUTF8", QStringLiteral("1"));
+	return e;
 }
 
 
 
-QFuture<PythonResult> PythonRunner::runScriptAsync(const QString& executionId,
-	const QString& script,
-	const QVariantList& arguments,
-	int timeout)
+/* ────────── ctor / dtor ─────────────────────────────────────── */
+PythonRunner::PythonRunner(QObject* parent)
+	: QObject(parent),
+	m_pyHome(detectPythonHome()),
+	m_pyExe(detectPythonExe(m_pyHome)),
+	m_env(makeEnv(m_pyHome))
+
 {
-	QPromise<PythonResult> promise;
-	QFuture<PythonResult> future = promise.future();
+//    m_pool.reserve(kMaxTotal);
+//    m_idle.reserve(kMaxTotal);
+// 
+//    for (int i = 0; i < kMaxIdle; ++i)
+// 		createProcess();
+}
 
-	// 6. Configure QProcess
-	QProcess* process = new QProcess(this);
-	process->setProcessEnvironment(environment);
-	process->setProgram(pythonExecutablePath);
-	process->setWorkingDirectory(pythonHome); // optional
-	//process->setProcessChannelMode(QProcess::MergedChannels);
+PythonRunner::~PythonRunner()
+{
+	for (auto* ex : std::as_const(m_byId))
+		cancel(ex->id);
+	for (auto* p : m_pool) {
+		p->kill();
+		p->deleteLater();
+	}
+}
 
-	QStringList procArgs;
-	procArgs << "-u" << "-c" << script;
-	// Optional script arguments:
-	// for (const auto &arg : arguments) {
-	//     procArgs << arg.toString();
-	// }
-	process->setArguments(procArgs);
+/* ────────── pool helpers ────────────────────────────────────── */
+QProcess* PythonRunner::createProcess()
+{
+	auto* p = new QProcess(this);
+	p->setProcessEnvironment(m_env);
+	p->setProgram(m_pyExe);
+	p->setWorkingDirectory(m_pyHome);
+	p->setArguments({ "-u", "-q", "-i" });
 
-	// 7. Optional timeout
-	QTimer* timeoutTimer = nullptr;
-	if (timeout != -1) {
-		timeoutTimer = new QTimer(this);
-		timeoutTimer->setSingleShot(true);
-		timeoutTimer->setInterval(timeout);
+	connect(p, &QProcess::readyReadStandardOutput, this, &PythonRunner::onStdout);
+	connect(p, &QProcess::readyReadStandardError, this, &PythonRunner::onStderr);
+	connect(p, &QProcess::finished, this, &PythonRunner::onFinished);
+	connect(p, &QProcess::errorOccurred, this, &PythonRunner::onError);
+
+	p->start();
+	p->waitForStarted();
+
+	/* one‑time bootstrap for this interpreter */
+	if (!m_initPayload.isEmpty()) {
+		p->write(m_initPayload);
+		p->waitForReadyRead();
+		p->readAllStandardOutput();  // flush  __INIT_DONE__
 	}
 
-	QElapsedTimer* elapsedTimer = new QElapsedTimer();
-	elapsedTimer->start();
+	m_pool.push_back(p);
+	m_idle.push_back(true);
+	return p;
+}
 
-	auto* data = new ExecutionData{
-		executionId, process, timeoutTimer, std::move(promise), elapsedTimer
-	};
-	executions.insert(executionId, data);
+/* ────────── pool helpers ────────────────────────────────────── */
+QProcess* PythonRunner::allocateProc()
+{
+	for (int i = 0, n = m_pool.size(); i < n; ++i)
+		if (m_idle[i]) {
+			m_idle[i] = false;
+			return m_pool[i];
+		}
 
-	// 	// Connect the new output slot
-	connect(process, &QProcess::readyReadStandardOutput,
-		this, &PythonRunner::onProcessReadyReadStandardOutput);
-
-	// 8. Connect signals
-	connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-		this, &PythonRunner::onProcessFinished);
-
-	connect(process, &QProcess::errorOccurred,
-		this, &PythonRunner::onProcessErrorOccurred);
-
-
-
-	if (timeoutTimer) {
-		connect(timeoutTimer, &QTimer::timeout, this, &PythonRunner::onTimeout);
+	if (m_pool.size() < m_maxTotal) {         // grow elastically
+		auto* p = createProcess();
+		m_idle.back() = false;               // mark new proc busy
+		return p;
 	}
-
-	// 9. Start
-	process->start();
-
-	if (timeoutTimer) timeoutTimer->start();
-	
-
-	return future;
+	return nullptr;                          // hard limit reached
 }
 
 
-void PythonRunner::onTimeout() {
-	QTimer* senderTimer = qobject_cast<QTimer*>(sender());
-	if (!senderTimer)
-		return;
+void PythonRunner::recycleProc(QProcess* p)
+{
+	p->readAllStandardOutput();
+	p->readAllStandardError();
 
-	QString executionId;
-	ExecutionData* data = nullptr;
 
-	for (auto it = executions.begin(); it != executions.end(); ++it) {
-		if (it.value()->timer == senderTimer) {
-			executionId = it.key();
-			data = it.value();
-			break;
+	int idx = m_pool.indexOf(p);
+	if (idx >= 0) {
+		const bool dead = (p->state() == QProcess::NotRunning);
+		m_idle[idx] = true;
+	
+		/* if process was killed or crashed, drop it from the pool */
+		if (dead) {
+			p->deleteLater();
+			m_pool.remove(idx);
+			m_idle.remove(idx);
+
+			/* keep our baseline of kMaxIdle ready interpreters */
+			if (m_pool.size() < m_maxIdle)
+				createProcess();
 		}
 	}
 
-	if (!data) {
-		senderTimer->deleteLater();
-		return;
+	/* trim surplus idle interpreters */
+	int idleCnt = std::count(m_idle.begin(), m_idle.end(), true);
+	while (idleCnt > m_maxIdle) {
+		int killIdx = m_idle.lastIndexOf(true);
+		m_pool[killIdx]->kill();
+		m_pool[killIdx]->deleteLater();
+		m_pool.remove(killIdx);
+		m_idle.remove(killIdx);
+		--idleCnt;
 	}
 
-	qWarning() << "Timeout occurred for executionId:" << executionId;
-
-	if (data->process->state() != QProcess::NotRunning) {
-		data->process->kill();
-		data->process->waitForFinished(1000);
+	/* run queued jobs, if any */
+	if (!m_pending.isEmpty()) {
+		const auto [nid, nscript, nto] = m_pending.dequeue();
+		runScriptAsync(nid, nscript, {}, nto);
 	}
-
-	PythonResult timeoutResult(data->executionId, false, "", "Execution timed out.", data->elapsedTimer->elapsed());
-	data->promise.addResult(timeoutResult);
-	data->promise.finish();
-
-	cleanUpExecutionData(executionId, data);
 }
 
-void PythonRunner::cleanUpExecutionData(const QString& executionId, ExecutionData* data) {
-	if (data->timer) {
-		data->timer->stop();
-		data->timer->deleteLater();
-	}
-
-	data->process->deleteLater();
-	delete data->elapsedTimer;
-	delete data;
-	executions.remove(executionId);
-}
-
-PythonRunner::ExecutionData* PythonRunner::getExecutionDataFromProcess(QProcess* process) const
+// ── hex‑wrapper helper: compile‑first, exec‑second ─────────────────────────
+// ── hex‑wrapper helper: compile‑first, exec‑second ────────────────
+// ── hex‑wrapper helper: compile‑first, exec‑second ────────────────
+QByteArray PythonRunner::wrapScript(QStringView script, QByteArrayView sentinel)
 {
-	ExecutionData* data = nullptr;
+	static const QByteArray kOpener = QByteArrayLiteral(
+		"src=bytes.fromhex('");
+	static const QByteArray kMid1 = QByteArrayLiteral(
+		"').decode()\n"
+		"import traceback,sys\n"
+		"sentinel='");
+	static const QByteArray kMid2 = QByteArrayLiteral(
+		"'\n"
+		"try:\n"
+		"    code=compile(src,'<stdin>','exec')\n"
+		"    exec(code,globals())\n"
+		"    print(sentinel)\n"              // success → stdout
+		"except Exception:\n"
+		"    traceback.print_exc(file=sys.stderr)\n"
+		"    sys.stderr.write(sentinel+'\\n')\n\n"); // error → stderr
 
-	for (auto it = executions.begin(); it != executions.end() && !data; ++it) 
-		if (it.value()->process == process) data = it.value();
-		
-	return data;
+	const QByteArray body = script.toUtf8().toHex();   // ASCII‑only
+
+	QByteArray payload;
+	payload.reserve(kOpener.size() + body.size()
+		+ kMid1.size() + sentinel.size()
+		+ kMid2.size());
+
+	payload += kOpener;
+	payload += body;
+	payload += kMid1;
+	payload += sentinel;
+	payload += kMid2;
+	return payload;
 }
 
-void PythonRunner::onProcessFinished(int exitCode, QProcess::ExitStatus exitStatus) {
-	const auto senderProc = qobject_cast<QProcess*>(sender());
-	if (!senderProc)
-		return;
 
-	const auto data = getExecutionDataFromProcess(senderProc);
-
-	if (!data) {
-		senderProc->deleteLater();
-		return;
+/* ────────── public API ──────────────────────────────────────── */
+QFuture<PythonResult>
+PythonRunner::runScriptAsync(const QString& id,
+	const QString& script,
+	const QVariantList& /*unused*/,
+	int timeoutMs)
+{
+	QProcess* proc = allocateProc();
+	if (!proc) {
+		m_pending.enqueue({ id, script, timeoutMs });
+		QPromise<PythonResult> dummy; dummy.finish();
+		return dummy.future();
 	}
 
-	const auto executionId = data->executionId;
-
-	if (data->timer) {
-		data->timer->stop();
-		data->timer->deleteLater();
+	QTimer* timer = nullptr;
+	if (timeoutMs > 0) {
+		timer = new QTimer(this);
+		timer->setSingleShot(true);
+		timer->setInterval(timeoutMs);
+		connect(timer, &QTimer::timeout, this, &PythonRunner::onTimeout);
 	}
 
-	const auto output = senderProc->readAllStandardOutput();
-	const auto errorOutput = senderProc->readAllStandardError();
-	bool success = (exitStatus == QProcess::NormalExit) && (exitCode == 0);
+	auto* ex = new Exec{ id, "__END_" + id + "__", proc, timer };
+	ex->elapsed.start();
+	m_byId.insert(id, ex);
+	m_byProc.insert(proc, ex);
+	if (timer) timer->start();
 
-	PythonResult result(executionId, success, output, errorOutput, data->elapsedTimer->elapsed());
-	data->promise.addResult(result);
-	data->promise.finish();
 
-	emit scriptFinished(executionId, result);
 
-	cleanUpExecutionData(executionId, data);
+	proc->write(wrapScript(script, ex->sentinel.toUtf8()));
+
+
+	++m_active;
+	return ex->promise.future();
 }
 
-void PythonRunner::onProcessErrorOccurred(QProcess::ProcessError error) {
-
-	const auto senderProc = qobject_cast<QProcess*>(sender());
-	
-	if (!senderProc) return;
-
-	const auto data = getExecutionDataFromProcess(senderProc);
-
-	if (!data) {
-		senderProc->deleteLater();
-		return;
+bool PythonRunner::cancel(const QString& id)
+{
+	if (auto* ex = m_byId.value(id, nullptr)) {
+		ex->errBuf = "Script cancelled";
+		ex->proc->kill();    // handled in onFinished/onError
+		return true;
 	}
-
-	const auto executionId = data->executionId;
-
-	data->timer->stop();
-	data->timer->deleteLater();
-
-	const auto output = senderProc->readAllStandardOutput();
-	const auto errorOutput = senderProc->readAllStandardError();
-	PythonResult result(data->executionId, false, output, errorOutput + " Process error occurred.", data->elapsedTimer->elapsed());
-
-	data->promise.addResult(result);
-	data->promise.finish();
-
-
-	cleanUpExecutionData(executionId, data);
+	return false;
 }
 
-bool PythonRunner::cancel(const QString& executionId) {
-	if (!executions.contains(executionId)) {
-		qWarning() << "Cancel requested for unknown executionId:" << executionId;
-		return false;
-	}
 
-	ExecutionData* data = executions.value(executionId);
+bool PythonRunner::init(QString const& payload,
+	const int  maxIdle,
+	const int  maxTotal)
+{
+	if (m_ready) return false;           // already initialised
 
+	m_initPayload = payload.toUtf8();   // raw, *unwrapped* script
+	m_initPayload = wrap(QString::fromUtf8(m_initPayload)); // hex‑wrap
+	m_maxIdle = std::max(1, maxIdle);
+	m_maxTotal = std::max(m_maxIdle, maxTotal);
 
-	if (!data) return false;
+	m_pool.reserve(m_maxTotal);
+	m_idle.reserve(m_maxTotal);
+	for (int i = 0; i < m_maxIdle; ++i)
+		createProcess();
 
-	executions.remove(executionId);
-
-	const auto processToKill = data->process;
-
-
-	if (processToKill->state() != QProcess::NotRunning) {
-		processToKill->kill(); // Terminate the process
-	}
-
-	if (data->timer) {
-		data->timer->stop();
-		data->timer->deleteLater();
-	}
-	
-	const auto output = processToKill->readAllStandardOutput();
-	processToKill->deleteLater();
-
-	// Set the promise result to indicate cancellation
-
-	PythonResult canceledResult(executionId, false, output, "Execution canceled by user.", data->elapsedTimer->elapsed());
-	data->promise.addResult(canceledResult);
-	data->promise.finish();
-
-	delete data->elapsedTimer;
-	delete data;
-
-
-	emit scriptFinished(executionId, canceledResult);
-
+	m_ready = true;
 	return true;
 }
 
-void PythonRunner::onProcessReadyReadStandardOutput()
+bool PythonRunner::onlyCRLF(const QByteArray& buf) const {
+
+	return std::all_of(buf.cbegin(), buf.cend(), [](char c) { return c == '\r' || c == '\n'; });
+}
+
+
+
+/* ────────── slots ──────────────────────────────────────────── */
+void PythonRunner::onStdout()
 {
-	QProcess* proc = qobject_cast<QProcess*>(sender());
-	if (!proc) return;
+	auto* p = qobject_cast<QProcess*>(sender());
+	auto* ex = execFor(p);
+	if (!ex) return;
 
-	ExecutionData* data = getExecutionDataFromProcess(proc);
-	if (!data) return;
 
-	// Read whatever is currently available from stdout
-	QString chunk = proc->readAllStandardOutput();
+	auto chunk = p->readAllStandardOutput();
 
-	// Emit the signal for partial output
-	emit scriptOutput(data->executionId, chunk);
+// 	static const QRegularExpression promptRx(QStringLiteral(R"((?m)^(>>> |\.\.\. ))"));
+// 
+// 	QString tmp = QString::fromUtf8(chunk);
+// 	tmp.remove(promptRx);            // works on QString
+// 	chunk = tmp.toUtf8();            // back to QByteArray
+	
+	//if (!ex->outBuf.isEmpty() && !onlyCRLF(ex->outBuf))
+	ex->outBuf += chunk;
+
+
+	const auto key = ex->sentinel.toUtf8();
+
+	if (ex->outBuf.contains(key)) {
+	
+		chunk.replace(key, {});
+		ex->outBuf.replace(key, {});
+	
+		if (!chunk.isEmpty() && !onlyCRLF(chunk))
+			emit scriptOutput(ex->id, QString::fromUtf8(chunk));
+
+		onFinished(0, QProcess::NormalExit);
+		return;
+	}
+
+	if(!ex->failed)
+		emit scriptOutput(ex->id, QString::fromUtf8(chunk));
+	
+	//ex->outBuf.clear();
+}
+
+void PythonRunner::onStderr()
+{
+	auto* p = qobject_cast<QProcess*>(sender());
+	auto* ex = execFor(p);
+	if (!ex) return;
+
+	const auto chunk = p->readAllStandardError();
+
+	QByteArray filtered;
+	filtered.reserve(chunk.size());
+
+	for (const auto& line : chunk.split('\n')) {
+		const auto trimmed = QByteArray(line).trimmed();
+		if (trimmed.startsWith(">>>") || trimmed.startsWith("..."))
+			continue;                         // skip REPL prompts
+		filtered += line;
+		filtered += '\n';
+	}
+
+	ex->errBuf += filtered;
+	const auto key = ex->sentinel.toUtf8();
+
+	if (ex->errBuf.contains(key)) {
+
+		ex->errBuf.replace(key, {});
+		ex->failed = true;
+
+		onFinished(0, QProcess::NormalExit);
+		return;
+	}
+}
+
+void PythonRunner::onFinished(int exitCode, QProcess::ExitStatus status)
+{
+	auto* p = qobject_cast<QProcess*>(sender());
+	auto* ex = execFor(p);
+	if (!ex) { recycleProc(p); return; }
+
+	if (ex->timer) { ex->timer->stop(); ex->timer->deleteLater(); }
+
+	const bool ok = !ex->failed && (status == QProcess::NormalExit && exitCode == 0);
+	PythonResult res(ex->id, ok,
+		QString::fromUtf8(ex->outBuf),
+		QString::fromUtf8(ex->errBuf),
+		ex->elapsed.elapsed());
+	ex->promise.addResult(res);
+	ex->promise.finish();
+	emit scriptFinished(ex->id, res);
+
+	m_byId.remove(ex->id);
+	m_byProc.remove(p);
+	--m_active;
+	delete ex;
+	recycleProc(p);
+}
+void PythonRunner::onError(QProcess::ProcessError)
+{
+	onFinished(-1, QProcess::CrashExit);
+}
+void PythonRunner::onTimeout()
+{
+	auto* t = qobject_cast<QTimer*>(sender());
+	for (auto it = m_byId.begin(); it != m_byId.end(); ++it)
+		if (it.value()->timer == t) { it.value()->proc->kill(); return; }
 }

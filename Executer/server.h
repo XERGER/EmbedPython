@@ -68,6 +68,7 @@ private:
 	void handleUpdatePackageCommand(QLocalSocket* client, const QJsonObject& obj);
 	void handleInstallLocalPackageCommand(QLocalSocket* client, const QJsonObject& obj);
 	void handleUpdateLocalPackageCommand(QLocalSocket* client, const QJsonObject& obj);
+	void handleInitCommand(QLocalSocket* client, const QJsonObject& obj);
 
 	// Helper methods for script execution
 	void handleScriptExecutionResult(QFutureWatcher<PythonResult>* watcher, QLocalSocket* client, const QString& executionId, const QString& script, QVariantList const& arguments);
